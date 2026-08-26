@@ -202,6 +202,14 @@ the queue then advances on its own, so HANDLER must not call
   "Return a step function running git ARGS, dispatching to HANDLER."
   (lambda (session) (mote--git session args (or handler #'ignore))))
 
+(defun mote--last-line (output)
+  "Return the last non-empty line of OUTPUT, trimmed.
+Git's stdout and stderr share one buffer here, so a warning git printed
+ahead of its answer must not be mistaken for the answer itself."
+  (let ((lines (seq-remove #'string-empty-p
+                           (mapcar #'string-trim (split-string output "\n")))))
+    (or (car (last lines)) "")))
+
 ;;;; Step queue
 
 (defun mote--push-steps (session steps)
@@ -393,7 +401,7 @@ index.lock -- lives in the directory that pointer names."
   "Queue a checkout for SESSION when HEAD is detached or on the wrong branch."
   (mote--git session '("symbolic-ref" "--quiet" "--short" "HEAD")
              (lambda (s code out)
-               (unless (and (zerop code) (equal (string-trim out) mote-branch))
+               (unless (and (zerop code) (equal (mote--last-line out) mote-branch))
                  (mote--log s ";; HEAD is not on %s" mote-branch)
                  (mote--push-steps
                   s (list (cons 'branch-switch #'mote--step-branch-switch)))))))
@@ -430,7 +438,7 @@ a detached HEAD orphans the commits while the run reports success, so a
 HEAD that could not be moved ends the run instead."
   (mote--git session '("symbolic-ref" "--quiet" "--short" "HEAD")
              (lambda (s code out)
-               (unless (and (zerop code) (equal (string-trim out) mote-branch))
+               (unless (and (zerop code) (equal (mote--last-line out) mote-branch))
                  (mote--log s ";; HEAD is not on %s, refusing to continue"
                             mote-branch)
                  (mote--abort s 'error)))))

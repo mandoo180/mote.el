@@ -1003,5 +1003,16 @@ Git reports this as DD on the old path plus AU and UA on the new ones."
         (when (get-buffer "*mote-test-log*")
           (kill-buffer "*mote-test-log*"))))))
 
+(ert-deftest mote-test-last-line-ignores-preceding-noise ()
+  "A warning git printed before its answer is not read as the answer.
+`mote--git' merges stderr into stdout, so `mote--step-branch-verify'
+would otherwise abort a healthy run over an incidental warning."
+  (should (equal (mote--last-line "main\n") "main"))
+  (should (equal (mote--last-line
+                  "warning: unable to access '/nowhere/.gitconfig'\nmain\n")
+                 "main"))
+  (should (equal (mote--last-line "  main  \n\n") "main"))
+  (should (equal (mote--last-line "") "")))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here
