@@ -246,5 +246,97 @@ Task 8 replaces this with the spec's wording; until then it is enough
 for tests to assert on `mote--session-status'."
   (format "mote: done (%s)" (mote--session-status session)))
 
+;;;; Steps -- bootstrap
+
+(defun mote--step-preflight (session)
+  "Make sure git is available and SESSION's root directory exists."
+  (let ((root (mote--session-root session)))
+    (cond
+     ((not (executable-find mote--git-program))
+      (mote--log session ";; git executable not found")
+      (mote--abort session 'error))
+     (t
+      (condition-case err
+          (unless (file-directory-p root) (make-directory root t))
+        (error
+         (mote--log session ";; cannot create %s: %S" root err)
+         (mote--abort session 'error))))))
+  (mote--next session))
+
+(defun mote--step-detect (session)
+  "Queue bootstrap steps when SESSION's root is not a repository yet."
+  (mote--git session '("rev-parse" "--git-dir")
+             (lambda (s code _out)
+               (unless (zerop code)
+                 (mote--push-steps s (mote--bootstrap-steps))))))
+
+(defun mote--bootstrap-steps ()
+  "Return the steps that turn an ordinary directory into a repository."
+  (list (cons 'init #'mote--step-init)
+        (cons 'gitignore #'mote--step-gitignore)))
+
+(defun mote--step-init (session)
+  "Initialise a repository on `mote-branch'.
+Falls back to plain `git init' plus `symbolic-ref' on git < 2.28, which
+does not understand the -b option."
+  (mote--git session (list "init" "-q" "-b" mote-branch)
+             (lambda (s code _out)
+               (unless (zerop code)
+                 (mote--push-steps
+                  s (list (cons 'init-plain #'mote--step-init-plain)
+                          (cons 'init-head #'mote--step-init-head)))))))
+
+(defun mote--step-init-plain (session)
+  "Initialise a repository without choosing the branch name."
+  (mote--git session '("init" "-q") #'ignore))
+
+(defun mote--step-init-head (session)
+  "Point HEAD at `mote-branch' in a freshly initialised repository."
+  (mote--git session
+             (list "symbolic-ref" "HEAD" (concat "refs/heads/" mote-branch))
+             #'ignore))
+
+(defun mote--step-gitignore (session)
+  "Seed .gitignore from `mote-gitignore' unless the file already exists."
+  (let ((file (expand-file-name ".gitignore" (mote--session-root session))))
+    (unless (file-exists-p file)
+      (mote--log session ";; seeding %s" file)
+      (with-temp-file file
+        (insert (string-join mote-gitignore "\n") "\n"))))
+  (mote--next session))
+
+;;;; Entry point
+
+(defun mote--pipeline ()
+  "Return the ordered steps of one synchronisation."
+  (list (cons 'preflight #'mote--step-preflight)
+        (cons 'detect #'mote--step-detect)))
+
+(defun mote--sync-1 (root callback)
+  "Start a synchronisation of ROOT, calling CALLBACK with the session.
+Returns the session.  This is the entry point the test suite drives."
+  (let ((session (make-mote--session
+                  :root (expand-file-name root)
+                  :queue (mote--pipeline)
+                  :retries 0
+                  :stats (list 0 0 0)
+                  :status 'ok
+                  :callback callback)))
+    (setq mote--session session)
+    (mote--next session)
+    session))
+
+;;;###autoload
+(defun mote-sync ()
+  "Synchronise `mote-root' with its git remote.
+Commits local changes, merges the remote taking whichever side of a
+conflict was committed more recently, and pushes.  Runs in the
+background and never asks a question: anything left broken is repaired
+by the next call."
+  (interactive)
+  (if mote--session
+      (message "mote: sync already in progress")
+    (mote--sync-1 mote-root nil)))
+
 (provide 'mote)
 ;;; mote.el ends here

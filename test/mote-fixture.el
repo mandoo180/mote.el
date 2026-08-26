@@ -77,5 +77,20 @@ Git configuration is isolated for mote's own subprocesses as well."
      (unwind-protect (progn ,@body)
        (mote-fixture-teardown ,var))))
 
+(defun mote-fixture-sync (root &optional timeout)
+  "Run `mote--sync-1' on ROOT and block until it finishes.
+Return the finished session.  Signal an error after TIMEOUT seconds
+\(default 30)."
+  (let* ((limit (or timeout 30))
+         (start (float-time))
+         (finished nil)
+         (session nil))
+    (setq session (mote--sync-1 root (lambda (s) (setq finished s))))
+    (while (and (not finished) (< (- (float-time) start) limit))
+      (accept-process-output nil 0.05))
+    (unless finished
+      (error "mote-fixture-sync: no completion within %ss" limit))
+    (or finished session)))
+
 (provide 'mote-fixture)
 ;;; mote-fixture.el ends here

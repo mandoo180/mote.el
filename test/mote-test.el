@@ -163,5 +163,64 @@
       (should (eq (mote--session-status session) 'error))
       (should (null mote--session)))))
 
+(ert-deftest mote-test-bootstrap-creates-repository ()
+  "Syncing an empty directory initialises a repository on `mote-branch'."
+  (mote-fixture-with fx
+    (let ((root (expand-file-name "fresh" (plist-get fx :root))))
+      (mote-fixture-sync root)
+      (should (file-directory-p (expand-file-name ".git" root)))
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git root "symbolic-ref" "--short" "HEAD")))
+                     "main")))))
+
+(ert-deftest mote-test-bootstrap-seeds-gitignore ()
+  "A fresh repository gets .gitignore seeded from `mote-gitignore'."
+  (mote-fixture-with fx
+    (let ((root (expand-file-name "fresh" (plist-get fx :root))))
+      (mote-fixture-sync root)
+      (should (equal (mote-fixture-read root ".gitignore")
+                     (concat (string-join mote-gitignore "\n") "\n"))))))
+
+(ert-deftest mote-test-bootstrap-keeps-existing-gitignore ()
+  "An existing .gitignore is left untouched."
+  (mote-fixture-with fx
+    (let ((root (expand-file-name "fresh" (plist-get fx :root))))
+      (make-directory root t)
+      (mote-fixture-write root ".gitignore" "mine\n")
+      (mote-fixture-sync root)
+      (should (equal (mote-fixture-read root ".gitignore") "mine\n")))))
+
+(ert-deftest mote-test-existing-repository-is-not-reinitialised ()
+  "Detect leaves an existing repository alone."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-fixture-write a "note.org" "hi\n")
+      (mote-fixture-commit a "seed" 1756000000)
+      (let ((head (string-trim (cdr (mote-fixture-git a "rev-parse" "HEAD")))))
+        (mote-fixture-sync a)
+        (should (equal (string-trim (cdr (mote-fixture-git a "rev-parse" "HEAD")))
+                       head))))))
+
+(ert-deftest mote-test-only-one-public-command ()
+  "`mote-sync' is the only interactive command in the package."
+  (let ((commands nil))
+    (mapatoms (lambda (sym)
+                (when (and (string-prefix-p "mote-" (symbol-name sym))
+                           (not (string-prefix-p "mote--" (symbol-name sym)))
+                           (not (string-prefix-p "mote-fixture" (symbol-name sym)))
+                           (not (string-prefix-p "mote-test" (symbol-name sym)))
+                           (commandp sym))
+                  (push sym commands))))
+    (should (equal commands '(mote-sync)))))
+
+(ert-deftest mote-test-sync-refuses-to-reenter ()
+  "A second `mote-sync' while one is in flight is a no-op."
+  (let ((mote--session (mote-test--session default-directory))
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
+      (mote-sync))
+    (should (member "mote: sync already in progress" messages))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here
