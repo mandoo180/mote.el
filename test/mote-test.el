@@ -123,5 +123,32 @@
     (should (member "GIT_TERMINAL_PROMPT=0" mote--forced-environment))
     (should (member "LC_ALL=C" mote--forced-environment))))
 
+(ert-deftest mote-test-step-error-ends-the-session ()
+  "A step that signals an error ends the run instead of wedging it."
+  (let* ((session (mote-test--session default-directory))
+         (finished nil)
+         (reached nil))
+    (setf (mote--session-queue session)
+          (list (cons 'boom (lambda (_s) (error "Boom")))
+                (cons 'never (lambda (s) (setq reached t) (mote--next s))))
+          (mote--session-callback session)
+          (lambda (_s) (setq finished t)))
+    (setq mote--session session)
+    (mote--next session)
+    (should (eq (mote--session-status session) 'error))
+    (should finished)
+    (should-not reached)
+    (should (null mote--session))))
+
+(ert-deftest mote-test-finish-runs-once ()
+  "Finishing an already-finished session does not fire the callback twice."
+  (let* ((session (mote-test--session default-directory))
+         (calls 0))
+    (setf (mote--session-callback session) (lambda (_s) (cl-incf calls)))
+    (setq mote--session session)
+    (mote--finish session)
+    (mote--finish session)
+    (should (equal calls 1))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

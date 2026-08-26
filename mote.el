@@ -107,6 +107,7 @@ Bound by the test suite to isolate git configuration.")
 ;;;; Session state
 
 (cl-defstruct (mote--session (:constructor make-mote--session))
+  "State for one in-flight `mote-sync' run."
   root        ; absolute path to the repository
   queue       ; remaining steps, each (NAME . FUNCTION)
   proc        ; git process currently running, or nil
@@ -211,20 +212,28 @@ the queue then advances on its own, so HANDLER must not call
 (defun mote--next (session)
   "Run the next step of SESSION, or finish when the queue is empty.
 A step that does no subprocess work must call this itself; a step that
-calls `mote--git' must not, because the sentinel does it."
+calls `mote--git' must not, because the sentinel does it.  A step that
+signals an error ends the run rather than leaving it in flight."
   (let ((step (pop (mote--session-queue session))))
     (if (null step)
         (mote--finish session)
       (mote--log session ";; step %s" (car step))
       (message "mote: %s" (car step))
-      (funcall (cdr step) session))))
+      (condition-case err
+          (funcall (cdr step) session)
+        (error
+         (mote--log session ";; step %s signalled: %S" (car step) err)
+         (mote--abort session 'error)
+         (mote--finish session))))))
 
 (defun mote--finish (session)
-  "Report SESSION's outcome, clear the in-flight marker, run its callback."
-  (setq mote--session nil)
-  (message "%s" (mote--summary session))
-  (when (mote--session-callback session)
-    (funcall (mote--session-callback session) session)))
+  "Report SESSION's outcome, clear the in-flight marker, run its callback.
+Finishing a session that is no longer the in-flight one is a no-op."
+  (when (eq mote--session session)
+    (setq mote--session nil)
+    (message "%s" (mote--summary session))
+    (when (mote--session-callback session)
+      (funcall (mote--session-callback session) session))))
 
 (defun mote--summary (session)
   "Return the one-line report for SESSION.
