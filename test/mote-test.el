@@ -293,5 +293,49 @@
         (should (mote--session-initial-p session)))
       (should (mote-fixture-read root ".gitignore")))))
 
+(ert-deftest mote-test-git-dir-follows-worktree-pointer ()
+  "A `.git' file holding a gitdir: pointer resolves to the real directory."
+  (mote-fixture-with fx
+    (let* ((root (expand-file-name "linked" (plist-get fx :root)))
+           (real (expand-file-name "real-git-dir" (plist-get fx :root)))
+           (session (mote-test--session root)))
+      (make-directory root t)
+      (make-directory real t)
+      (mote-fixture-write root ".git" (concat "gitdir: " real "\n"))
+      (should (equal (file-name-as-directory (mote--git-dir session))
+                     (file-name-as-directory real))))))
+
+(ert-deftest mote-test-heal-aborts-leftover-merge-in-linked-worktree ()
+  "Heal finds MERGE_HEAD in a linked worktree, where `.git' is a file."
+  (mote-fixture-with fx
+    (let* ((a (plist-get fx :a))
+           (linked (expand-file-name "linked-wt" (plist-get fx :root))))
+      (mote-test--seed a)
+      (mote-fixture-git a "worktree" "add" "-q" "-b" "wt" linked)
+      (let ((git-dir (string-trim
+                      (cdr (mote-fixture-git linked "rev-parse" "--absolute-git-dir")))))
+        (should-not (file-directory-p (expand-file-name ".git" linked)))
+        (with-temp-file (expand-file-name "MERGE_HEAD" git-dir)
+          (insert (cdr (mote-fixture-git linked "rev-parse" "HEAD"))))
+        (let ((mote-branch "wt"))
+          (mote-fixture-sync linked))
+        (should-not (file-exists-p (expand-file-name "MERGE_HEAD" git-dir)))))))
+
+(ert-deftest mote-test-heal-creates-missing-branch ()
+  "When `mote-branch' does not exist at all, heal creates it."
+  (mote-fixture-with fx
+    (let ((root (expand-file-name "master-only" (plist-get fx :root))))
+      (make-directory root t)
+      (mote-fixture-git root "init" "-q" "-b" "master")
+      (mote-fixture-git root "config" "user.name" "test")
+      (mote-fixture-git root "config" "user.email" "test@example.com")
+      (mote-fixture-write root "note.org" "seed\n")
+      (mote-fixture-commit root "seed" 1756000000)
+      (should (equal (car (mote-fixture-git root "rev-parse" "--verify" "--quiet" "main")) 1))
+      (mote-fixture-sync root)
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git root "symbolic-ref" "--short" "HEAD")))
+                     "main")))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

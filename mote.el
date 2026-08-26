@@ -308,8 +308,23 @@ does not understand the -b option."
 ;;;; Steps -- heal
 
 (defun mote--git-dir (session)
-  "Return the .git directory of SESSION's repository."
-  (expand-file-name ".git" (mote--session-root session)))
+  "Return the git directory of SESSION's repository.
+This is `.git' under the root for an ordinary checkout.  In a linked
+worktree or a submodule `.git' is instead a file holding a `gitdir:'
+pointer, and the state mote heals -- MERGE_HEAD, CHERRY_PICK_HEAD and
+index.lock -- lives in the directory that pointer names."
+  (let* ((root (mote--session-root session))
+         (dot-git (expand-file-name ".git" root)))
+    (cond
+     ((file-directory-p dot-git) dot-git)
+     ((file-readable-p dot-git)
+      (with-temp-buffer
+        (insert-file-contents dot-git)
+        (goto-char (point-min))
+        (if (re-search-forward "^gitdir: *\\(.+?\\)[ \t\r\n]*$" nil t)
+            (expand-file-name (match-string 1) root)
+          dot-git)))
+     (t dot-git))))
 
 (defun mote--maybe-remove-stale-lock (session git-dir)
   "Delete GIT-DIR's index.lock when it is too old to belong to live git."
