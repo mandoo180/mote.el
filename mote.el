@@ -376,7 +376,8 @@ index.lock -- lives in the directory that pointer names."
     (mote--push-steps session
                       (append (nreverse steps)
                               (list (cons 'head-check #'mote--step-head-check)
-                                    (cons 'branch-check #'mote--step-branch-check)))))
+                                    (cons 'branch-check #'mote--step-branch-check)
+                                    (cons 'branch-verify #'mote--step-branch-verify)))))
   (mote--next session))
 
 (defun mote--step-head-check (session)
@@ -398,20 +399,53 @@ index.lock -- lives in the directory that pointer names."
                   s (list (cons 'branch-switch #'mote--step-branch-switch)))))))
 
 (defun mote--step-branch-switch (session)
-  "Check out `mote-branch' for SESSION, creating it when it does not exist."
+  "Check out `mote-branch' in SESSION."
   (mote--git session (list "checkout" "-q" mote-branch)
              (lambda (s code _out)
                (unless (zerop code)
                  (mote--push-steps
-                  s (list (cons 'branch-create
+                  s (list (cons 'branch-create #'mote--step-branch-create)))))))
+
+(defun mote--step-branch-create (session)
+  "Create `mote-branch' in SESSION, but only when no such branch exists.
+A checkout that failed for any other reason -- a dirty file the switch
+would overwrite, say -- must not be papered over by creating a branch;
+`mote--step-branch-verify' stops the run instead."
+  (mote--git session
+             (list "rev-parse" "--verify" "--quiet"
+                   (concat "refs/heads/" mote-branch))
+             (lambda (s code _out)
+               (if (zerop code)
+                   (mote--log s ";; %s exists but could not be checked out"
+                              mote-branch)
+                 (mote--push-steps
+                  s (list (cons 'branch-create-do
                                 (mote--git-step
                                  (list "checkout" "-q" "-b" mote-branch)))))))))
+
+(defun mote--step-branch-verify (session)
+  "Stop SESSION unless HEAD is on `mote-branch'.
+Everything after this point stages, commits and pushes.  Doing that from
+a detached HEAD orphans the commits while the run reports success, so a
+HEAD that could not be moved ends the run instead."
+  (mote--git session '("symbolic-ref" "--quiet" "--short" "HEAD")
+             (lambda (s code out)
+               (unless (and (zerop code) (equal (string-trim out) mote-branch))
+                 (mote--log s ";; HEAD is not on %s, refusing to continue"
+                            mote-branch)
+                 (mote--abort s 'error)))))
 
 ;;;; Steps -- local commit
 
 (defun mote--step-stage (session)
-  "Stage every change in SESSION's working tree."
-  (mote--git session '("add" "-A") #'ignore))
+  "Stage every change in SESSION's working tree.
+Git stages nothing at all when this fails, so the run stops here:
+carrying on would commit nothing and report success."
+  (mote--git session '("add" "-A")
+             (lambda (s code _out)
+               (unless (zerop code)
+                 (mote--log s ";; staging failed, nothing was indexed")
+                 (mote--abort s 'error)))))
 
 (defun mote--parse-name-status (output)
   "Parse NUL-separated name-status OUTPUT into a list of (STATUS . PATH).
@@ -480,10 +514,15 @@ source is discarded."
   "Commit SUBJECT and BODY in SESSION.
 With IDENTITY non-nil, supply mote's fallback committer name and email.
 A first attempt that fails only for want of an identity is retried that
-way automatically."
+way automatically.
+
+Signing is forced off for the same reason hooks are skipped: a
+repository with `commit.gpgsign' set would otherwise stop the run on
+gpg-agent's pinentry, which no environment variable can suppress."
   (mote--git
    session
-   (append (when identity
+   (append (list "-c" "commit.gpgsign=false")
+           (when identity
              (list "-c" (concat "user.name=" mote--identity-name)
                    "-c" (concat "user.email=" (mote--identity-email))))
            (list "commit" "--no-verify" "-m" subject)
@@ -576,9 +615,12 @@ that stops on conflicts queues the resolution steps."
          (mote--push-steps
           s (list (cons 'merge-unrelated (lambda (s2) (mote--step-merge s2 t))))))
         (t
-         (mote--log s ";; merge stopped, resolving conflicts")
-         (mote--push-steps
-          s (list (cons 'resolve #'mote--step-resolve)))))))))
+         (if (file-exists-p (expand-file-name "MERGE_HEAD" (mote--git-dir s)))
+             (progn
+               (mote--log s ";; merge stopped, resolving conflicts")
+               (mote--push-steps s (list (cons 'resolve #'mote--step-resolve))))
+           (mote--log s ";; merge never started")
+           (mote--abort s 'remote-failed))))))))
 
 (defun mote--rejected-p (output)
   "Return non-nil when OUTPUT shows a push rejected for being behind."
@@ -700,18 +742,21 @@ commit times of the two sides; ties go to the local side."
              (mote--resolve-apply session xy path (nth 0 times) (nth 1 times)))))))
 
 (defun mote--conflicts-body (conflicts)
-  "Render CONFLICTS as the merge commit body."
-  (concat
-   "resolved by newer commit time:\n"
-   (mapconcat
-    (lambda (conflict)
-      (pcase-let ((`(,path ,side ,t-local ,t-remote) conflict))
-        (format "  %-7s %s   %s"
-                (if (eq side 'local) "local" "remote")
-                path
-                (format-time-string "%Y-%m-%d %H:%M"
-                                    (if (eq side 'local) t-local t-remote)))))
-    conflicts "\n")))
+  "Render CONFLICTS as the merge commit body.
+Returns nil for an empty list, so a merge that resolved nothing gets a
+subject and no body at all."
+  (when conflicts
+    (concat
+     "resolved by newer commit time:\n"
+     (mapconcat
+      (lambda (conflict)
+        (pcase-let ((`(,path ,side ,t-local ,t-remote) conflict))
+          (format "  %-7s %s   %s"
+                  (if (eq side 'local) "local" "remote")
+                  path
+                  (format-time-string "%Y-%m-%d %H:%M"
+                                      (if (eq side 'local) t-local t-remote)))))
+      conflicts "\n"))))
 
 (defun mote--round-conflicts (session already)
   "Return the conflicts SESSION recorded after the first ALREADY of them.

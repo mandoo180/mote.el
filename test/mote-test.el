@@ -261,6 +261,47 @@
       (mote-fixture-sync a)
       (should (file-exists-p lock)))))
 
+(ert-deftest mote-test-heal-aborts-leftover-rebase ()
+  "A rebase interrupted by conflicts is aborted before the sync proceeds."
+  (mote-fixture-with fx
+    (let* ((a (plist-get fx :a))
+           (git (expand-file-name ".git" a)))
+      (mote-fixture-write a "note.org" "base\n")
+      (mote-fixture-commit a "base" 1756000000)
+      (mote-fixture-git a "checkout" "-q" "-b" "side")
+      (mote-fixture-write a "note.org" "side\n")
+      (mote-fixture-commit a "side" 1756000100)
+      (mote-fixture-git a "checkout" "-q" "main")
+      (mote-fixture-write a "note.org" "main\n")
+      (mote-fixture-commit a "main" 1756000200)
+      (mote-fixture-git a "checkout" "-q" "side")
+      (should-not (equal (car (mote-fixture-git a "rebase" "main")) 0))
+      (should (file-directory-p (expand-file-name "rebase-merge" git)))
+      (mote-fixture-sync a)
+      (should-not (file-directory-p (expand-file-name "rebase-merge" git)))
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git a "symbolic-ref" "--short" "HEAD")))
+                     "main")))))
+
+(ert-deftest mote-test-heal-aborts-leftover-cherry-pick ()
+  "A cherry-pick interrupted by conflicts is aborted before the sync."
+  (mote-fixture-with fx
+    (let* ((a (plist-get fx :a))
+           (git (expand-file-name ".git" a)))
+      (mote-fixture-write a "note.org" "base\n")
+      (mote-fixture-commit a "base" 1756000000)
+      (mote-fixture-git a "checkout" "-q" "-b" "side")
+      (mote-fixture-write a "note.org" "side\n")
+      (mote-fixture-commit a "side" 1756000100)
+      (mote-fixture-git a "checkout" "-q" "main")
+      (mote-fixture-write a "note.org" "main\n")
+      (mote-fixture-commit a "main" 1756000200)
+      (should-not (equal (car (mote-fixture-git a "cherry-pick" "side")) 0))
+      (should (file-exists-p (expand-file-name "CHERRY_PICK_HEAD" git)))
+      (mote-fixture-sync a)
+      (should-not (file-exists-p
+                   (expand-file-name "CHERRY_PICK_HEAD" git))))))
+
 (ert-deftest mote-test-heal-checks-out-mote-branch ()
   "A repository sitting on another branch is moved to `mote-branch'."
   (mote-fixture-with fx
@@ -336,6 +377,42 @@
       (should (equal (string-trim
                       (cdr (mote-fixture-git root "symbolic-ref" "--short" "HEAD")))
                      "main")))))
+
+(ert-deftest mote-test-refuses-to-run-on-detached-head ()
+  "When HEAD cannot be moved onto `mote-branch', the run stops.
+Committing from a detached HEAD would orphan the user's work while
+reporting a successful sync."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      ;; Give `main' a commit the detached HEAD lacks, then dirty the same
+      ;; file so `git checkout main' refuses to overwrite it.
+      (mote-fixture-write a "note.org" "on main\n")
+      (mote-fixture-commit a "main moves" 1756000100)
+      (mote-fixture-git a "checkout" "-q" "--detach" "HEAD~1")
+      (mote-fixture-write a "note.org" "dirty\n")
+      (let ((session (mote-fixture-sync a)))
+        (should (eq (mote--session-status session) 'error)))
+      ;; Nothing was committed onto the detached HEAD.
+      (should-not (string-prefix-p
+                   "mote:"
+                   (string-trim
+                    (cdr (mote-fixture-git a "log" "-1" "--format=%s"))))))))
+
+(ert-deftest mote-test-failed-staging-does-not-report-success ()
+  "A blocked `git add' stops the run instead of reporting up to date."
+  (mote-fixture-with fx
+    (let* ((a (plist-get fx :a))
+           (lock (expand-file-name ".git/index.lock" a)))
+      (mote-test--seed a)
+      (mote-fixture-write a "precious.org" "keep me\n")
+      (with-temp-file lock (insert ""))
+      (let ((session (mote-fixture-sync a)))
+        (should (eq (mote--session-status session) 'error))
+        (should-not (equal (mote--summary session) "mote: up to date")))
+      ;; A fresh lock is still left alone, and nothing was silently dropped.
+      (should (file-exists-p lock))
+      (should (equal (mote-fixture-read a "precious.org") "keep me\n")))))
 
 (ert-deftest mote-test-parse-name-status-handles-renames ()
   "R and C records carry two paths; only the destination is kept."
@@ -426,6 +503,20 @@
                       (cdr (mote-fixture-git a "log" "-1" "--format=%ce")))
                      (mote--identity-email))))))
 
+(ert-deftest mote-test-commits-with-signing-forced-on ()
+  "A repository configured to sign every commit still syncs unattended."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      (mote-fixture-git a "config" "commit.gpgsign" "true")
+      (mote-fixture-git a "config" "gpg.program" "/nonexistent/gpg")
+      (mote-fixture-write a "note.org" "changed\n")
+      (mote-fixture-sync a)
+      (should (string-prefix-p
+               "mote: sync"
+               (string-trim
+                (cdr (mote-fixture-git a "log" "-1" "--format=%s"))))))))
+
 (ert-deftest mote-test-initial-commit-on-empty-repository ()
   "A repository with no commit gets an init commit holding .gitignore."
   (mote-fixture-with fx
@@ -515,6 +606,40 @@
         (should (mote-fixture-read b "from-a.org"))
         (should (mote-fixture-read b "from-b.org"))))))
 
+(ert-deftest mote-test-blocked-merge-is-not-treated-as-a-conflict ()
+  "A merge git refused to start ends the run instead of committing."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b))
+            (finished nil))
+        (mote-fixture-write a "note.org" "base\n")
+        (mote-fixture-commit a "base" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
+        ;; The remote adds a path that already exists here, untracked, so
+        ;; git refuses to begin the merge rather than conflicting.
+        (mote-fixture-write a "extra.org" "from remote\n")
+        (mote-fixture-commit a "adds extra" 1756000100)
+        (mote-fixture-git a "push" "-q" "origin" "main")
+        (mote-fixture-write b "extra.org" "untracked local\n")
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (let ((session (mote-test--session b)))
+          (setf (mote--session-queue session)
+                (list (cons 'merge #'mote--step-merge))
+                (mote--session-callback session)
+                (lambda (_s) (setq finished t)))
+          (setq mote--session session)
+          (mote--next session)
+          (should (mote-test--wait (lambda () finished)))
+          (should (eq (mote--session-status session) 'remote-failed))
+          (should (null (mote--session-conflicts session))))
+        ;; The untracked file survives and no merge commit was made.
+        (should (equal (mote-fixture-read b "extra.org") "untracked local\n"))
+        (should (equal (string-trim
+                        (cdr (mote-fixture-git b "log" "-1" "--format=%s")))
+                       "base"))))))
 
 (ert-deftest mote-test-retries-a-rejected-push ()
   "A push rejected because the remote moved is retried after fetching.
@@ -722,6 +847,52 @@ Returns the path of clone B, which is the one left to sync."
       (let ((b (mote-test--diverge fx "local\n" 1756000100 nil 1756000900)))
         (mote-fixture-sync b)
         (should-not (mote-fixture-read b "shared.org"))))))
+
+(ert-deftest mote-test-resolves-rename-rename-conflict ()
+  "A note renamed differently on two machines resolves without help.
+Git reports this as DD on the old path plus AU and UA on the new ones."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "f.org" "shared\n")
+        (mote-fixture-commit a "base" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
+        (mote-fixture-git a "mv" "f.org" "right.org")
+        (mote-fixture-commit a "rename right" 1756000100)
+        (mote-fixture-git a "push" "-q" "origin" "main")
+        (mote-fixture-git b "mv" "f.org" "left.org")
+        (mote-fixture-commit b "rename left" 1756000200)
+        (let ((session (mote-fixture-sync b)))
+          (should (eq (mote--session-status session) 'ok)))
+        ;; Neither rename is lost, and the old path is gone.
+        (should (equal (mote-fixture-read b "left.org") "shared\n"))
+        (should (equal (mote-fixture-read b "right.org") "shared\n"))
+        (should-not (mote-fixture-read b "f.org"))
+        (should (equal (string-trim
+                        (cdr (mote-fixture-git b "status" "--porcelain")))
+                       ""))))))
+
+(ert-deftest mote-test-conflict-both-added-newer-wins ()
+  "When both machines add the same new path, the newer one wins."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "note.org" "base\n")
+        (mote-fixture-commit a "base" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
+        (mote-fixture-write a "new.org" "from remote\n")
+        (mote-fixture-commit a "remote adds" 1756000100)
+        (mote-fixture-git a "push" "-q" "origin" "main")
+        (mote-fixture-write b "new.org" "from local\n")
+        (mote-fixture-commit b "local adds" 1756000200)
+        (mote-fixture-sync b)
+        (should (equal (mote-fixture-read b "new.org") "from local\n"))))))
 
 (ert-deftest mote-test-merge-commit-records-the-decision ()
   "The merge commit says which side won and when."
