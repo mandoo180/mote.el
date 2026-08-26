@@ -437,5 +437,119 @@
                                (string-trim
                                 (cdr (mote-fixture-git root "log" "-1" "--format=%s"))))))))
 
+(defmacro mote-test--with-remote (fx &rest body)
+  "Run BODY with `mote-remote' pointing at FX's bare origin."
+  (declare (indent 1))
+  `(let ((mote-remote (plist-get ,fx :origin))) ,@body))
+
+(ert-deftest mote-test-local-only-when-no-remote-configured ()
+  "Without a remote the session ends as local-only and still commits."
+  (mote-fixture-with fx
+    (let* ((root (expand-file-name "solo" (plist-get fx :root))))
+      (make-directory root t)
+      (mote-fixture-git root "init" "-q" "-b" "main")
+      (mote-fixture-write root "note.org" "hi\n")
+      (let ((session (mote-fixture-sync root)))
+        (should (eq (mote--session-status session) 'local-only)))
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git root "rev-list" "--count" "HEAD")))
+                     "1")))))
+
+(ert-deftest mote-test-first-push-creates-remote-branch ()
+  "The very first sync pushes and sets upstream."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a)))
+        (mote-fixture-write a "note.org" "hi\n")
+        (let ((session (mote-fixture-sync a)))
+          (should (eq (mote--session-status session) 'ok)))
+        (should (equal (car (mote-fixture-git (plist-get fx :origin)
+                                              "rev-parse" "--verify" "main"))
+                       0))))))
+
+(ert-deftest mote-test-remote-url-is-repaired ()
+  "A wrong origin URL is rewritten to `mote-remote'."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a)))
+        (mote-fixture-git a "remote" "set-url" "origin" "/nonexistent/wrong.git")
+        (mote-fixture-write a "note.org" "hi\n")
+        (mote-fixture-sync a)
+        (should (equal (string-trim
+                        (cdr (mote-fixture-git a "remote" "get-url" "origin")))
+                       (plist-get fx :origin)))))))
+
+(ert-deftest mote-test-fast-forwards-from-remote ()
+  "A clone that shares history with the remote fast-forwards onto it."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "note.org" "from-a\n")
+        (mote-fixture-commit a "seed" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        ;; B starts from the same commit, so the later sync is a true
+        ;; fast-forward rather than a merge of unrelated histories.
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
+        (mote-fixture-write a "later.org" "later\n")
+        (mote-fixture-commit a "later" 1756000100)
+        (mote-fixture-git a "push" "-q" "origin" "main")
+        (mote-fixture-sync b)
+        (should (equal (mote-fixture-read b "later.org") "later\n"))
+        (should (equal (mote-fixture-read b "note.org") "from-a\n"))))))
+
+(ert-deftest mote-test-merges-unrelated-histories ()
+  "Two independently initialised histories are merged, not refused."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "from-a.org" "a\n")
+        (mote-fixture-commit a "a" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-write b "from-b.org" "b\n")
+        (mote-fixture-commit b "b" 1756000100)
+        (let ((session (mote-fixture-sync b)))
+          (should (eq (mote--session-status session) 'ok)))
+        (should (mote-fixture-read b "from-a.org"))
+        (should (mote-fixture-read b "from-b.org"))))))
+
+(ert-deftest mote-test-retries-a-rejected-push ()
+  "A push rejected because the remote moved is retried after fetching."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "shared.org" "base\n")
+        (mote-fixture-commit a "base" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (mote-fixture-git b "reset" "-q" "--hard" "origin/main")
+        (mote-fixture-git b "branch" "-q" "--set-upstream-to" "origin/main" "main")
+        ;; A pushes something new that B has not seen.
+        (mote-fixture-write a "only-a.org" "a\n")
+        (mote-fixture-commit a "a2" 1756000100)
+        (mote-fixture-git a "push" "-q" "origin" "main")
+        ;; B commits its own work and syncs; its first push must be rejected.
+        (mote-fixture-write b "only-b.org" "b\n")
+        (let ((session (mote-fixture-sync b)))
+          (should (eq (mote--session-status session) 'ok))
+          (should (> (mote--session-retries session) 0)))
+        (should (mote-fixture-read b "only-a.org"))))))
+
+(ert-deftest mote-test-unreachable-remote-keeps-local-commit ()
+  "A dead remote leaves the local commit in place and reports the failure."
+  (mote-fixture-with fx
+    (let ((mote-remote (expand-file-name "no-such.git" (plist-get fx :root)))
+          (a (plist-get fx :a)))
+      (mote-fixture-git a "remote" "set-url" "origin" mote-remote)
+      (mote-fixture-write a "note.org" "hi\n")
+      (let ((session (mote-fixture-sync a)))
+        (should (eq (mote--session-status session) 'remote-failed)))
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git a "rev-list" "--count" "HEAD")))
+                     "1")))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

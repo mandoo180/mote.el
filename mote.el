@@ -490,6 +490,108 @@ way automatically."
                   (unless (mote--session-initial-p session)
                     (mote--changes-body (mote--session-changes session))))))
 
+;;;; Steps -- remote sync
+
+(defun mote--remote-ref ()
+  "Return the tracking ref mote synchronises against."
+  (concat mote--remote-name "/" mote-branch))
+
+(defun mote--step-remote-setup (session)
+  "Make SESSION's repository point at `mote-remote', or end it local-only."
+  (mote--git
+   session (list "remote" "get-url" mote--remote-name)
+   (lambda (s code out)
+     (let ((url (string-trim out)))
+       (cond
+        ((and (not (zerop code)) (null mote-remote))
+         (mote--log s ";; no remote configured, staying local")
+         (mote--abort s 'local-only))
+        ((not (zerop code))
+         (setf (mote--session-remote-p s) t)
+         (mote--push-steps
+          s (list (cons 'remote-add
+                        (mote--git-step (list "remote" "add"
+                                              mote--remote-name mote-remote))))))
+        ((and mote-remote (not (equal url mote-remote)))
+         (setf (mote--session-remote-p s) t)
+         (mote--log s ";; repairing origin URL")
+         (mote--push-steps
+          s (list (cons 'remote-set-url
+                        (mote--git-step (list "remote" "set-url"
+                                              mote--remote-name mote-remote))))))
+        (t (setf (mote--session-remote-p s) t)))))))
+
+(defun mote--step-fetch (session)
+  "Fetch SESSION's remote, ending the run when the remote is unreachable."
+  (mote--git session (list "fetch" "--prune" "-q" mote--remote-name)
+             (lambda (s code _out)
+               (unless (zerop code)
+                 (mote--log s ";; fetch failed")
+                 (mote--abort s 'remote-failed)))))
+
+(defun mote--step-merge-check (session)
+  "Drop the merge step when the remote branch does not exist yet."
+  (mote--git session (list "rev-parse" "--verify" "--quiet" (mote--remote-ref))
+             (lambda (s code _out)
+               (unless (zerop code)
+                 (mote--log s ";; %s does not exist yet" (mote--remote-ref))
+                 (setf (mote--session-queue s)
+                       (assq-delete-all 'merge (mote--session-queue s)))))))
+
+(defun mote--step-merge (session &optional unrelated)
+  "Merge the remote branch into SESSION's branch.
+With UNRELATED non-nil, allow histories that share no commit.  A merge
+that stops on conflicts queues the resolution steps."
+  (let ((ref (mote--remote-ref)))
+    (mote--git
+     session
+     (append (list "merge" "--no-edit" "-m" (format "mote: merge %s" ref))
+             (when unrelated (list "--allow-unrelated-histories"))
+             (list ref))
+     (lambda (s code out)
+       (cond
+        ((zerop code) nil)
+        ((and (not unrelated)
+              (string-match-p "refusing to merge unrelated histories" out))
+         (mote--log s ";; retrying merge with unrelated histories allowed")
+         (mote--push-steps
+          s (list (cons 'merge-unrelated (lambda (s2) (mote--step-merge s2 t))))))
+        (t
+         (mote--log s ";; merge stopped, resolving conflicts")
+         (mote--push-steps
+          s (list (cons 'resolve #'mote--step-resolve)))))))))
+
+(defun mote--rejected-p (output)
+  "Return non-nil when OUTPUT shows a push rejected for being behind."
+  (string-match-p "non-fast-forward\\|fetch first\\|\\[rejected\\]" output))
+
+(defun mote--step-push (session)
+  "Push SESSION's branch, retrying after a fetch when the remote moved."
+  (mote--git
+   session (list "push" "-q" "-u" mote--remote-name mote-branch)
+   (lambda (s code out)
+     (cond
+      ((zerop code) nil)
+      ((and (mote--rejected-p out)
+            (< (mote--session-retries s) mote-push-retry-limit))
+       (cl-incf (mote--session-retries s))
+       (mote--log s ";; push rejected, retry %d" (mote--session-retries s))
+       (mote--push-steps
+        s (list (cons 'fetch #'mote--step-fetch)
+                (cons 'merge-check #'mote--step-merge-check)
+                (cons 'merge #'mote--step-merge)
+                (cons 'push #'mote--step-push))))
+      (t
+       (mote--log s ";; push failed")
+       (mote--abort s 'remote-failed))))))
+
+(defun mote--step-resolve (session)
+  "Placeholder replaced in the conflict-resolution task.
+For now a stopped merge simply ends the run as a remote failure."
+  (mote--log session ";; conflict resolution not implemented yet")
+  (mote--abort session 'remote-failed)
+  (mote--next session))
+
 ;;;; Entry point
 
 (defun mote--pipeline ()
@@ -499,7 +601,12 @@ way automatically."
         (cons 'heal #'mote--step-heal)
         (cons 'stage #'mote--step-stage)
         (cons 'status #'mote--step-status)
-        (cons 'commit #'mote--step-commit)))
+        (cons 'commit #'mote--step-commit)
+        (cons 'remote-setup #'mote--step-remote-setup)
+        (cons 'fetch #'mote--step-fetch)
+        (cons 'merge-check #'mote--step-merge-check)
+        (cons 'merge #'mote--step-merge)
+        (cons 'push #'mote--step-push)))
 
 (defun mote--sync-1 (root callback)
   "Start a synchronisation of ROOT, calling CALLBACK with the session.
