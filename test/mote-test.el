@@ -791,5 +791,46 @@ Returns the path of clone B, which is the one left to sync."
         (should (equal (mote-fixture-read b "x.org") "local-x\n"))
         (should (equal (mote-fixture-read b "y.org") "remote-y\n"))))))
 
+(defun mote-test--summary (status &optional stats conflicts)
+  "Return the summary line for a session with STATUS, STATS and CONFLICTS."
+  (let ((session (mote-test--session default-directory)))
+    (setf (mote--session-status session) status
+          (mote--session-stats session) (or stats (list 0 0 0))
+          (mote--session-conflicts session) conflicts)
+    (mote--summary session)))
+
+(ert-deftest mote-test-summary-wording ()
+  "Each outcome gets the wording the spec calls for."
+  (should (equal (mote-test--summary 'ok) "mote: up to date"))
+  (should (equal (mote-test--summary 'ok (list 2 1 0))
+                 "mote: 3 changes committed, pushed to origin/main"))
+  (should (equal (mote-test--summary 'ok (list 0 1 0)
+                                     '(("a.org" local 1 0) ("b.org" remote 0 1)))
+                 "mote: merged 2 conflicts (latest wins), pushed to origin/main"))
+  (should (equal (mote-test--summary 'local-only (list 1 0 0))
+                 "mote: 1 changes committed locally (no remote)"))
+  (should (equal (mote-test--summary 'local-only)
+                 "mote: up to date (local only)"))
+  (should (equal (mote-test--summary 'remote-failed (list 1 0 0))
+                 "mote: 1 changes committed locally; remote unreachable (see *mote-log*)"))
+  (should (equal (mote-test--summary 'remote-failed)
+                 "mote: remote unreachable (see *mote-log*)"))
+  (should (equal (mote-test--summary 'error)
+                 "mote: sync failed (see *mote-log*)")))
+
+(ert-deftest mote-test-log-buffer-records-commands ()
+  "Every git invocation is written to `mote-log-buffer'."
+  (mote-fixture-with fx
+    (let ((mote-log-buffer "*mote-test-log*"))
+      (unwind-protect
+          (progn
+            (mote-test--seed (plist-get fx :a))
+            (mote-fixture-sync (plist-get fx :a))
+            (with-current-buffer mote-log-buffer
+              (should (string-match-p "\\$ git add -A" (buffer-string)))
+              (should buffer-read-only)))
+        (when (get-buffer "*mote-test-log*")
+          (kill-buffer "*mote-test-log*"))))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

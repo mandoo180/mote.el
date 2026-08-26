@@ -1,0 +1,83 @@
+#+TITLE: mote.el
+#+OPTIONS: toc:nil
+
+One command keeps a personal notes directory in sync with a git remote.
+
+* Why
+
+Notes want version control but not a version-control workflow.  ~mote~
+gives you a single command.  It commits what changed, merges what the
+remote has, resolves conflicts on its own and pushes.  It never asks a
+question, and every decision it makes stays in the history, so anything
+it got wrong can be reverted.
+
+* Install
+
+#+begin_src emacs-lisp
+(use-package mote
+  :vc (:url "https://github.com/mandoo180/mote.el" :rev :newest)
+  :commands (mote-sync)
+  :custom
+  (mote-root (expand-file-name "~/notes"))
+  (mote-remote "git@github.com:you/notes.git")
+  :bind ("C-c n S" . mote-sync))
+#+end_src
+
+* Use
+
+~M-x mote-sync~.  That is the whole interface.
+
+The first run turns ~mote-root~ into a git repository, seeds a
+~.gitignore~ and connects ~mote-remote~.  Later runs commit, merge and
+push.  Everything happens in the background; the echo area reports the
+outcome and =*mote-log*= holds every git command and its output.
+
+* Conflicts
+
+When both machines changed the same file, the side whose commit is more
+recent wins, file by file.  Deleting counts as a change: a newer
+deletion beats an older edit.  The losing version is still in the
+history, and the merge commit names the winner:
+
+#+begin_example
+mote: merge origin/main (latest-wins: 2 files)
+
+resolved by newer commit time:
+  local   denote/foo.org   2026-08-26 13:40
+  remote  inbox/bar.org    2026-08-26 13:44
+#+end_example
+
+* Self-healing
+
+An interrupted run leaves nothing for you to fix.  The next ~mote-sync~
+aborts a leftover merge, rebase or cherry-pick, removes a stale
+~index.lock~, reattaches a detached HEAD, supplies a committer identity
+when the repository has none, merges unrelated histories, and retries a
+push the remote rejected.  A network failure keeps the local commit and
+gives up quietly.
+
+~mote~ never runs ~git reset --hard~, ~git clean~ or a forced push.
+
+* Options
+
+| Variable                 | Default          | Meaning                                    |
+|--------------------------+------------------+--------------------------------------------|
+| ~mote-root~              | ~~/mote-sync~    | Notes directory and repository root        |
+| ~mote-remote~            | ~nil~            | Remote URL; nil keeps the repo local only  |
+| ~mote-branch~            | ~"main"~         | Branch to synchronise                      |
+| ~mote-gitignore~         | see source       | Lines seeded into a new ~.gitignore~       |
+| ~mote-push-retry-limit~  | ~3~              | Retries after a rejected push              |
+| ~mote-log-buffer~        | ~"*mote-log*"~   | Buffer collecting git output               |
+
+* Tests
+
+#+begin_src sh
+emacs --batch -f batch-byte-compile mote.el
+emacs --batch -L . -L test -l ert -l mote.el -l test/mote-test.el \
+      -f ert-run-tests-batch-and-exit
+emacs --batch -l checkdoc -f checkdoc-file mote.el
+#+end_src
+
+* License
+
+GPL-3.0-or-later.

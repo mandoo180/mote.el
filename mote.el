@@ -241,10 +241,29 @@ Finishing a session that is no longer the in-flight one is a no-op."
       (funcall (mote--session-callback session) session))))
 
 (defun mote--summary (session)
-  "Return the one-line report for SESSION.
-Task 8 replaces this with the spec's wording; until then it is enough
-for tests to assert on `mote--session-status'."
-  (format "mote: done (%s)" (mote--session-status session)))
+  "Return the one-line report describing how SESSION ended."
+  (pcase-let* ((`(,added ,modified ,deleted) (mote--session-stats session))
+               (changed (+ added modified deleted))
+               (conflicts (length (mote--session-conflicts session)))
+               (ref (concat mote--remote-name "/" mote-branch)))
+    (pcase (mote--session-status session)
+      ('error "mote: sync failed (see *mote-log*)")
+      ('local-only
+       (if (zerop changed)
+           "mote: up to date (local only)"
+         (format "mote: %d changes committed locally (no remote)" changed)))
+      ('remote-failed
+       (if (zerop changed)
+           "mote: remote unreachable (see *mote-log*)"
+         (format "mote: %d changes committed locally; remote unreachable (see *mote-log*)"
+                 changed)))
+      (_
+       (cond
+        ((> conflicts 0)
+         (format "mote: merged %d conflicts (latest wins), pushed to %s"
+                 conflicts ref))
+        ((zerop changed) "mote: up to date")
+        (t (format "mote: %d changes committed, pushed to %s" changed ref)))))))
 
 ;;;; Steps -- bootstrap
 
@@ -276,7 +295,7 @@ for tests to assert on `mote--session-status'."
         (cons 'gitignore #'mote--step-gitignore)))
 
 (defun mote--step-init (session)
-  "Initialise a repository on `mote-branch'.
+  "Initialise SESSION's repository on `mote-branch'.
 Falls back to plain `git init' plus `symbolic-ref' on git < 2.28, which
 does not understand the -b option."
   (mote--git session (list "init" "-q" "-b" mote-branch)
@@ -287,17 +306,17 @@ does not understand the -b option."
                           (cons 'init-head #'mote--step-init-head)))))))
 
 (defun mote--step-init-plain (session)
-  "Initialise a repository without choosing the branch name."
+  "Initialise SESSION's repository without choosing the branch name."
   (mote--git session '("init" "-q") #'ignore))
 
 (defun mote--step-init-head (session)
-  "Point HEAD at `mote-branch' in a freshly initialised repository."
+  "Point SESSION's HEAD at `mote-branch' in a freshly initialised repository."
   (mote--git session
              (list "symbolic-ref" "HEAD" (concat "refs/heads/" mote-branch))
              #'ignore))
 
 (defun mote--step-gitignore (session)
-  "Seed .gitignore from `mote-gitignore' unless the file already exists."
+  "Seed SESSION's .gitignore from `mote-gitignore' unless it already exists."
   (let ((file (expand-file-name ".gitignore" (mote--session-root session))))
     (unless (file-exists-p file)
       (mote--log session ";; seeding %s" file)
@@ -327,7 +346,7 @@ index.lock -- lives in the directory that pointer names."
      (t dot-git))))
 
 (defun mote--maybe-remove-stale-lock (session git-dir)
-  "Delete GIT-DIR's index.lock when it is too old to belong to live git."
+  "Delete GIT-DIR's index.lock when it is too old; log to SESSION."
   (let ((lock (expand-file-name "index.lock" git-dir)))
     (when (and (file-exists-p lock)
                (> (float-time
@@ -370,7 +389,7 @@ index.lock -- lives in the directory that pointer names."
                   s (list (cons 'seed-gitignore #'mote--step-gitignore)))))))
 
 (defun mote--step-branch-check (session)
-  "Queue a checkout when HEAD is detached or on the wrong branch."
+  "Queue a checkout for SESSION when HEAD is detached or on the wrong branch."
   (mote--git session '("symbolic-ref" "--quiet" "--short" "HEAD")
              (lambda (s code out)
                (unless (and (zerop code) (equal (string-trim out) mote-branch))
@@ -379,7 +398,7 @@ index.lock -- lives in the directory that pointer names."
                   s (list (cons 'branch-switch #'mote--step-branch-switch)))))))
 
 (defun mote--step-branch-switch (session)
-  "Check out `mote-branch', creating it when it does not exist."
+  "Check out `mote-branch' for SESSION, creating it when it does not exist."
   (mote--git session (list "checkout" "-q" mote-branch)
              (lambda (s code _out)
                (unless (zerop code)
@@ -530,7 +549,7 @@ way automatically."
                  (mote--abort s 'remote-failed)))))
 
 (defun mote--step-merge-check (session)
-  "Drop the merge step when the remote branch does not exist yet."
+  "Drop the merge step for SESSION when the remote branch does not exist yet."
   (mote--git session (list "rev-parse" "--verify" "--quiet" (mote--remote-ref))
              (lambda (s code _out)
                (unless (zerop code)
