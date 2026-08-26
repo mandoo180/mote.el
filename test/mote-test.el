@@ -638,5 +638,115 @@ retry fetches and merges, the next push succeeds."
                       (cdr (mote-fixture-git b "rev-list" "--count" "HEAD")))
                      "1")))))
 
+(ert-deftest mote-test-parse-unmerged-records ()
+  "Unmerged porcelain v2 records yield their XY code and path."
+  (let ((out (concat
+              "1 .M N... 100644 100644 100644 aaa bbb kept.org\0"
+              "u UU N... 100644 100644 100644 100644 h1 h2 h3 note with space.org\0"
+              "2 R. N... 100644 100644 100644 ccc ddd R100 new.org\0old.org\0"
+              "u DU N... 000000 000000 100644 100644 h1 h2 h3 gone.org\0")))
+    (should (equal (mote--parse-unmerged out)
+                   '(("UU" . "note with space.org")
+                     ("DU" . "gone.org"))))))
+
+(ert-deftest mote-test-parse-ct-handles-empty-output ()
+  "A path no commit touched scores zero."
+  (should (equal (mote--parse-ct "1756000000\n") 1756000000))
+  (should (equal (mote--parse-ct "") 0)))
+
+(defun mote-test--diverge (fx local-text local-epoch remote-text remote-epoch)
+  "Set up FX so A and B both changed shared.org, then push A's version.
+Returns the path of clone B, which is the one left to sync."
+  (let ((a (plist-get fx :a))
+        (b (plist-get fx :b)))
+    (mote-fixture-write a "shared.org" "base\n")
+    (mote-fixture-commit a "base" 1756000000)
+    (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+    (mote-fixture-git b "fetch" "-q" "origin")
+    (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
+    (when remote-text (mote-fixture-write a "shared.org" remote-text))
+    (unless remote-text (delete-file (expand-file-name "shared.org" a)))
+    (mote-fixture-commit a "remote change" remote-epoch)
+    (mote-fixture-git a "push" "-q" "origin" "main")
+    (when local-text (mote-fixture-write b "shared.org" local-text))
+    (unless local-text (delete-file (expand-file-name "shared.org" b)))
+    (mote-fixture-commit b "local change" local-epoch)
+    b))
+
+(ert-deftest mote-test-conflict-newer-local-wins ()
+  "When the local commit is newer its content survives."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx "local\n" 1756000900 "remote\n" 1756000100)))
+        (let ((session (mote-fixture-sync b)))
+          (should (eq (mote--session-status session) 'ok))
+          (should (equal (length (mote--session-conflicts session)) 1)))
+        (should (equal (mote-fixture-read b "shared.org") "local\n"))))))
+
+(ert-deftest mote-test-conflict-newer-remote-wins ()
+  "When the remote commit is newer its content survives."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx "local\n" 1756000100 "remote\n" 1756000900)))
+        (mote-fixture-sync b)
+        (should (equal (mote-fixture-read b "shared.org") "remote\n"))))))
+
+(ert-deftest mote-test-conflict-local-deletion-wins-when-newer ()
+  "A newer local deletion beats a remote edit."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx nil 1756000900 "remote\n" 1756000100)))
+        (mote-fixture-sync b)
+        (should-not (mote-fixture-read b "shared.org"))))))
+
+(ert-deftest mote-test-conflict-remote-edit-wins-over-older-deletion ()
+  "An older local deletion loses to a newer remote edit."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx nil 1756000100 "remote\n" 1756000900)))
+        (mote-fixture-sync b)
+        (should (equal (mote-fixture-read b "shared.org") "remote\n"))))))
+
+(ert-deftest mote-test-conflict-local-edit-wins-over-older-remote-deletion ()
+  "A newer local edit beats a remote deletion."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx "local\n" 1756000900 nil 1756000100)))
+        (mote-fixture-sync b)
+        (should (equal (mote-fixture-read b "shared.org") "local\n"))))))
+
+(ert-deftest mote-test-conflict-remote-deletion-wins-when-newer ()
+  "A newer remote deletion beats a local edit."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx "local\n" 1756000100 nil 1756000900)))
+        (mote-fixture-sync b)
+        (should-not (mote-fixture-read b "shared.org"))))))
+
+(ert-deftest mote-test-merge-commit-records-the-decision ()
+  "The merge commit says which side won and when."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx "local\n" 1756000900 "remote\n" 1756000100)))
+        (mote-fixture-sync b)
+        (let ((subject (string-trim
+                        (cdr (mote-fixture-git b "log" "-1" "--format=%s"))))
+              (body (cdr (mote-fixture-git b "log" "-1" "--format=%b"))))
+          (should (equal subject "mote: merge origin/main (latest-wins: 1 files)"))
+          (should (string-match-p "resolved by newer commit time:" body))
+          (should (string-match-p "local +shared\\.org" body)))))))
+
+(ert-deftest mote-test-conflicted-sync-still-pushes ()
+  "After resolving, the merge result reaches the remote."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((b (mote-test--diverge fx "local\n" 1756000900 "remote\n" 1756000100)))
+        (mote-fixture-sync b)
+        (should (equal (string-trim
+                        (cdr (mote-fixture-git b "rev-parse" "HEAD")))
+                       (string-trim
+                        (cdr (mote-fixture-git (plist-get fx :origin)
+                                               "rev-parse" "main")))))))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

@@ -585,12 +585,133 @@ that stops on conflicts queues the resolution steps."
        (mote--log s ";; push failed")
        (mote--abort s 'remote-failed))))))
 
-(defun mote--step-resolve (session)
-  "Placeholder replaced in the conflict-resolution task.
-For now a stopped merge simply ends the run as a remote failure."
-  (mote--log session ";; conflict resolution not implemented yet")
-  (mote--abort session 'remote-failed)
+;;;; Conflict resolution
+
+(defconst mote--unmerged-record-regexp
+  "\\`u \\([ADMU][ADMU]\\)\\(?: [^ ]+\\)\\{8\\} \\(.*\\)\\'"
+  "Match a porcelain v2 unmerged record.
+Group 1 is the XY code, group 2 the path.  The eight skipped fields are
+the submodule state, three stage modes, the worktree mode and three
+stage object names.")
+
+(defun mote--parse-unmerged (output)
+  "Return (XY . PATH) for every unmerged entry in porcelain v2 OUTPUT."
+  (let ((records (split-string output "\0" t))
+        (result nil))
+    (while records
+      (let ((record (pop records)))
+        (cond
+         ;; A rename entry spends a second NUL-separated field on the
+         ;; original path; skip it so it is not read as a record.
+         ((string-prefix-p "2 " record) (pop records))
+         ((string-match mote--unmerged-record-regexp record)
+          (push (cons (match-string 1 record) (match-string 2 record))
+                result)))))
+    (nreverse result)))
+
+(defun mote--parse-ct (output)
+  "Return OUTPUT as a commit timestamp, or 0 when it is empty."
+  (let ((text (string-trim output)))
+    (if (string-empty-p text) 0 (string-to-number text))))
+
+(defun mote--rm-step (path)
+  "Return a step deleting PATH from the index and working tree.
+Falls back to an index-only removal when the file is already gone."
+  (cons 'conflict-rm
+        (lambda (session)
+          (mote--git
+           session (list "rm" "-f" "-q" "--" path)
+           (lambda (s code _out)
+             (unless (zerop code)
+               (mote--push-steps
+                s (list (cons 'conflict-rm-cached
+                              (mote--git-step
+                               (list "rm" "--cached" "-q" "--" path)))))))))))
+
+(defun mote--resolve-steps-for (xy local-wins path)
+  "Return the steps applying the latest-wins decision for PATH.
+XY is the porcelain v2 conflict code and LOCAL-WINS says which side won."
+  (pcase (cons xy local-wins)
+    (`("DD" . ,_) (list (mote--rm-step path)))
+    (`("DU" . t) (list (mote--rm-step path)))
+    (`("DU" . nil)
+     (list (cons 'conflict-take
+                 (mote--git-step (list "checkout" "MERGE_HEAD" "--" path)))))
+    (`("UD" . t)
+     (list (cons 'conflict-take
+                 (mote--git-step (list "checkout" "HEAD" "--" path)))))
+    (`("UD" . nil) (list (mote--rm-step path)))
+    (_
+     (list (cons 'conflict-take
+                 (mote--git-step (list "checkout"
+                                       (if local-wins "--ours" "--theirs")
+                                       "--" path)))
+           (cons 'conflict-add (mote--git-step (list "add" "--" path)))))))
+
+(defun mote--resolve-apply (session xy path t-local t-remote)
+  "Queue the resolution of PATH in SESSION and record the decision.
+T-LOCAL and T-REMOTE are the commit times of the two sides; ties go to
+the local side."
+  (let* ((local-wins (>= t-local t-remote))
+         (side (if local-wins 'local 'remote)))
+    (push (list path side t-local t-remote) (mote--session-conflicts session))
+    (mote--log session ";; %s: %s wins (%d vs %d)" path side t-local t-remote)
+    (mote--push-steps session (mote--resolve-steps-for xy local-wins path)))
   (mote--next session))
+
+(defun mote--resolve-steps (entry)
+  "Return the steps resolving one conflicted ENTRY, a cons of (XY . PATH)."
+  (let ((xy (car entry))
+        (path (cdr entry))
+        (times (list 0 0)))
+    (list
+     (cons 'conflict-local
+           (lambda (session)
+             (mote--git session (list "log" "-1" "--format=%ct" "HEAD" "--" path)
+                        (lambda (_s _code out)
+                          (setf (nth 0 times) (mote--parse-ct out))))))
+     (cons 'conflict-remote
+           (lambda (session)
+             (mote--git session
+                        (list "log" "-1" "--format=%ct" "MERGE_HEAD" "--" path)
+                        (lambda (_s _code out)
+                          (setf (nth 1 times) (mote--parse-ct out))))))
+     (cons 'conflict-apply
+           (lambda (session)
+             (mote--resolve-apply session xy path (nth 0 times) (nth 1 times)))))))
+
+(defun mote--conflicts-body (conflicts)
+  "Render CONFLICTS as the merge commit body."
+  (concat
+   "resolved by newer commit time:\n"
+   (mapconcat
+    (lambda (conflict)
+      (pcase-let ((`(,path ,side ,t-local ,t-remote) conflict))
+        (format "  %-7s %s   %s"
+                (if (eq side 'local) "local" "remote")
+                path
+                (format-time-string "%Y-%m-%d %H:%M"
+                                    (if (eq side 'local) t-local t-remote)))))
+    conflicts "\n")))
+
+(defun mote--step-resolve (session)
+  "Resolve every conflicted path in SESSION, then commit the merge."
+  (mote--git
+   session '("status" "--porcelain=v2" "-z")
+   (lambda (s _code out)
+     (let ((entries (mote--parse-unmerged out)))
+       (mote--push-steps
+        s (append (apply #'append (mapcar #'mote--resolve-steps entries))
+                  (list (cons 'merge-commit #'mote--step-merge-commit))))))))
+
+(defun mote--step-merge-commit (session)
+  "Commit the resolved merge in SESSION."
+  (let ((conflicts (nreverse (mote--session-conflicts session))))
+    (setf (mote--session-conflicts session) conflicts)
+    (mote--commit session
+                  (format "mote: merge %s (latest-wins: %d files)"
+                          (mote--remote-ref) (length conflicts))
+                  (mote--conflicts-body conflicts))))
 
 ;;;; Entry point
 
