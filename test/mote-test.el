@@ -222,5 +222,76 @@
       (mote-sync))
     (should (member "mote: sync already in progress" messages))))
 
+(defun mote-test--seed (dir &optional epoch)
+  "Give DIR one commit so HEAD exists.  EPOCH sets the commit time."
+  (mote-fixture-write dir "note.org" "seed\n")
+  (mote-fixture-commit dir "seed" (or epoch 1756000000)))
+
+(ert-deftest mote-test-heal-aborts-leftover-merge ()
+  "A leftover MERGE_HEAD is aborted before anything else runs."
+  (mote-fixture-with fx
+    (let* ((a (plist-get fx :a))
+           (git (expand-file-name ".git" a)))
+      (mote-test--seed a)
+      (with-temp-file (expand-file-name "MERGE_HEAD" git)
+        (insert (cdr (mote-fixture-git a "rev-parse" "HEAD"))))
+      (mote-fixture-sync a)
+      (should-not (file-exists-p (expand-file-name "MERGE_HEAD" git))))))
+
+(ert-deftest mote-test-heal-removes-stale-index-lock ()
+  "An index.lock older than `mote--lock-stale-seconds' is deleted."
+  (mote-fixture-with fx
+    (let* ((a (plist-get fx :a))
+           (lock (expand-file-name ".git/index.lock" a)))
+      (mote-test--seed a)
+      (with-temp-file lock (insert ""))
+      (set-file-times lock (time-subtract (current-time)
+                                          (seconds-to-time
+                                           (* 2 mote--lock-stale-seconds))))
+      (mote-fixture-sync a)
+      (should-not (file-exists-p lock)))))
+
+(ert-deftest mote-test-heal-keeps-fresh-index-lock ()
+  "A lock a live git process might own is left alone."
+  (mote-fixture-with fx
+    (let* ((a (plist-get fx :a))
+           (lock (expand-file-name ".git/index.lock" a)))
+      (mote-test--seed a)
+      (with-temp-file lock (insert ""))
+      (mote-fixture-sync a)
+      (should (file-exists-p lock)))))
+
+(ert-deftest mote-test-heal-checks-out-mote-branch ()
+  "A repository sitting on another branch is moved to `mote-branch'."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      (mote-fixture-git a "checkout" "-q" "-b" "scratch")
+      (mote-fixture-sync a)
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git a "symbolic-ref" "--short" "HEAD")))
+                     "main")))))
+
+(ert-deftest mote-test-heal-recovers-from-detached-head ()
+  "A detached HEAD is reattached to `mote-branch'."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      (mote-fixture-git a "checkout" "-q" "--detach" "HEAD")
+      (mote-fixture-sync a)
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git a "symbolic-ref" "--short" "HEAD")))
+                     "main")))))
+
+(ert-deftest mote-test-heal-marks-repository-without-commits ()
+  "A repository with no commit is flagged initial and gets .gitignore."
+  (mote-fixture-with fx
+    (let ((root (expand-file-name "bare-init" (plist-get fx :root))))
+      (make-directory root t)
+      (mote-fixture-git root "init" "-q" "-b" "main")
+      (let ((session (mote-fixture-sync root)))
+        (should (mote--session-initial-p session)))
+      (should (mote-fixture-read root ".gitignore")))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

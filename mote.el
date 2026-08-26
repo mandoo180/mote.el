@@ -305,12 +305,81 @@ does not understand the -b option."
         (insert (string-join mote-gitignore "\n") "\n"))))
   (mote--next session))
 
+;;;; Steps -- heal
+
+(defun mote--git-dir (session)
+  "Return the .git directory of SESSION's repository."
+  (expand-file-name ".git" (mote--session-root session)))
+
+(defun mote--maybe-remove-stale-lock (session git-dir)
+  "Delete GIT-DIR's index.lock when it is too old to belong to live git."
+  (let ((lock (expand-file-name "index.lock" git-dir)))
+    (when (and (file-exists-p lock)
+               (> (float-time
+                   (time-since (file-attribute-modification-time
+                                (file-attributes lock))))
+                  mote--lock-stale-seconds))
+      (mote--log session ";; removing stale %s" lock)
+      (ignore-errors (delete-file lock)))))
+
+(defun mote--step-heal (session)
+  "Undo any interrupted git operation left in SESSION's repository."
+  (let ((git (mote--git-dir session))
+        (steps nil))
+    (when (file-exists-p (expand-file-name "MERGE_HEAD" git))
+      (mote--log session ";; leftover merge found")
+      (push (cons 'merge-abort (mote--git-step '("merge" "--abort"))) steps))
+    (when (or (file-directory-p (expand-file-name "rebase-merge" git))
+              (file-directory-p (expand-file-name "rebase-apply" git)))
+      (mote--log session ";; leftover rebase found")
+      (push (cons 'rebase-abort (mote--git-step '("rebase" "--abort"))) steps))
+    (when (file-exists-p (expand-file-name "CHERRY_PICK_HEAD" git))
+      (mote--log session ";; leftover cherry-pick found")
+      (push (cons 'cherry-pick-abort
+                  (mote--git-step '("cherry-pick" "--abort")))
+            steps))
+    (mote--maybe-remove-stale-lock session git)
+    (mote--push-steps session
+                      (append (nreverse steps)
+                              (list (cons 'head-check #'mote--step-head-check)
+                                    (cons 'branch-check #'mote--step-branch-check)))))
+  (mote--next session))
+
+(defun mote--step-head-check (session)
+  "Note whether SESSION's repository has a commit yet, seeding .gitignore."
+  (mote--git session '("rev-parse" "--verify" "--quiet" "HEAD")
+             (lambda (s code _out)
+               (unless (zerop code)
+                 (setf (mote--session-initial-p s) t)
+                 (mote--push-steps
+                  s (list (cons 'seed-gitignore #'mote--step-gitignore)))))))
+
+(defun mote--step-branch-check (session)
+  "Queue a checkout when HEAD is detached or on the wrong branch."
+  (mote--git session '("symbolic-ref" "--quiet" "--short" "HEAD")
+             (lambda (s code out)
+               (unless (and (zerop code) (equal (string-trim out) mote-branch))
+                 (mote--log s ";; HEAD is not on %s" mote-branch)
+                 (mote--push-steps
+                  s (list (cons 'branch-switch #'mote--step-branch-switch)))))))
+
+(defun mote--step-branch-switch (session)
+  "Check out `mote-branch', creating it when it does not exist."
+  (mote--git session (list "checkout" "-q" mote-branch)
+             (lambda (s code _out)
+               (unless (zerop code)
+                 (mote--push-steps
+                  s (list (cons 'branch-create
+                                (mote--git-step
+                                 (list "checkout" "-q" "-b" mote-branch)))))))))
+
 ;;;; Entry point
 
 (defun mote--pipeline ()
   "Return the ordered steps of one synchronisation."
   (list (cons 'preflight #'mote--step-preflight)
-        (cons 'detect #'mote--step-detect)))
+        (cons 'detect #'mote--step-detect)
+        (cons 'heal #'mote--step-heal)))
 
 (defun mote--sync-1 (root callback)
   "Start a synchronisation of ROOT, calling CALLBACK with the session.
