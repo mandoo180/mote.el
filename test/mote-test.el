@@ -748,5 +748,48 @@ Returns the path of clone B, which is the one left to sync."
                         (cdr (mote-fixture-git (plist-get fx :origin)
                                                "rev-parse" "main")))))))))
 
+(ert-deftest mote-test-merge-commit-covers-only-its-own-round ()
+  "Each merge commit describes its own round, not every round so far."
+  (let ((session (mote-test--session default-directory)))
+    ;; Recorded newest-first, the way `mote--resolve-apply' pushes them:
+    ;; round two's b.org sits on top of round one's a.org.
+    (setf (mote--session-conflicts session)
+          (list (list "b.org" 'remote 1 2) (list "a.org" 'local 2 1)))
+    (should (equal (mapcar #'car (mote--round-conflicts session 0))
+                   '("a.org" "b.org")))
+    (should (equal (mapcar #'car (mote--round-conflicts session 1))
+                   '("b.org")))
+    ;; The running total survives, so the summary can still report it.
+    (should (equal (length (mote--session-conflicts session)) 2))))
+
+(ert-deftest mote-test-resolves-two-conflicts-independently ()
+  "Two files conflicting in one merge are decided file by file."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "x.org" "base\n")
+        (mote-fixture-write a "y.org" "base\n")
+        (mote-fixture-commit a "base" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
+        ;; Remote touches x early and y late.
+        (mote-fixture-write a "x.org" "remote-x\n")
+        (mote-fixture-commit a "remote x" 1756000100)
+        (mote-fixture-write a "y.org" "remote-y\n")
+        (mote-fixture-commit a "remote y" 1756000200)
+        (mote-fixture-git a "push" "-q" "origin" "main")
+        ;; Local touches y early and x late, so the two files must split.
+        (mote-fixture-write b "y.org" "local-y\n")
+        (mote-fixture-commit b "local y" 1756000050)
+        (mote-fixture-write b "x.org" "local-x\n")
+        (mote-fixture-commit b "local x" 1756000300)
+        (let ((session (mote-fixture-sync b)))
+          (should (eq (mote--session-status session) 'ok))
+          (should (equal (length (mote--session-conflicts session)) 2)))
+        (should (equal (mote-fixture-read b "x.org") "local-x\n"))
+        (should (equal (mote-fixture-read b "y.org") "remote-y\n"))))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

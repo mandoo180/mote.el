@@ -650,8 +650,8 @@ XY is the porcelain v2 conflict code and LOCAL-WINS says which side won."
 
 (defun mote--resolve-apply (session xy path t-local t-remote)
   "Queue the resolution of PATH in SESSION and record the decision.
-T-LOCAL and T-REMOTE are the commit times of the two sides; ties go to
-the local side."
+XY is the porcelain v2 conflict code.  T-LOCAL and T-REMOTE are the
+commit times of the two sides; ties go to the local side."
   (let* ((local-wins (>= t-local t-remote))
          (side (if local-wins 'local 'remote)))
     (push (list path side t-local t-remote) (mote--session-conflicts session))
@@ -694,24 +694,33 @@ the local side."
                                     (if (eq side 'local) t-local t-remote)))))
     conflicts "\n")))
 
+(defun mote--round-conflicts (session already)
+  "Return the conflicts SESSION recorded after the first ALREADY of them.
+Conflicts accumulate across rounds so `mote--summary' can report the
+whole sync, but each merge commit describes only its own round."
+  (nthcdr already (reverse (mote--session-conflicts session))))
+
 (defun mote--step-resolve (session)
   "Resolve every conflicted path in SESSION, then commit the merge."
-  (mote--git
-   session '("status" "--porcelain=v2" "-z")
-   (lambda (s _code out)
-     (let ((entries (mote--parse-unmerged out)))
-       (mote--push-steps
-        s (append (apply #'append (mapcar #'mote--resolve-steps entries))
-                  (list (cons 'merge-commit #'mote--step-merge-commit))))))))
+  (let ((already (length (mote--session-conflicts session))))
+    (mote--git
+     session '("status" "--porcelain=v2" "-z")
+     (lambda (s _code out)
+       (let ((entries (mote--parse-unmerged out)))
+         (mote--push-steps
+          s (append (apply #'append (mapcar #'mote--resolve-steps entries))
+                    (list (cons 'merge-commit
+                                (lambda (s2) (mote--step-merge-commit s2 already)))))))))))
 
-(defun mote--step-merge-commit (session)
-  "Commit the resolved merge in SESSION."
-  (let ((conflicts (nreverse (mote--session-conflicts session))))
-    (setf (mote--session-conflicts session) conflicts)
+(defun mote--step-merge-commit (session &optional already)
+  "Commit the resolved merge in SESSION.
+ALREADY is how many conflicts were on record before this round began;
+only the ones recorded after it belong in this commit."
+  (let ((round (mote--round-conflicts session (or already 0))))
     (mote--commit session
                   (format "mote: merge %s (latest-wins: %d files)"
-                          (mote--remote-ref) (length conflicts))
-                  (mote--conflicts-body conflicts))))
+                          (mote--remote-ref) (length round))
+                  (mote--conflicts-body round))))
 
 ;;;; Entry point
 
