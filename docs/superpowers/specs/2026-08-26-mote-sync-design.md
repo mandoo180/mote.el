@@ -190,14 +190,15 @@ preflight → detect → heal → stage → status → commit
 |---|---|---|
 | `preflight` | elisp 전용. `mote-root` 없으면 `make-directory ... t`. `git` 실행파일 없으면 즉시 `error` 종료 | — |
 | `detect` | `rev-parse --git-dir` | exit≠0 → 부트스트랩 스텝(§6.1)을 큐 앞에 push |
-| `heal` | §6 자가 복구 점검 | 필요한 복구 스텝을 큐 앞에 push |
-| `stage` | `add -A` | — |
+| `heal` | §6 자가 복구 점검 | 필요한 복구 스텝을 큐 앞에 push. 마지막은 항상 `branch-verify` 다 |
+| `branch-verify` | `symbolic-ref -q --short HEAD` (`heal` 이 마지막으로 큐에 넣는다) | HEAD 가 `mote-branch` 가 아니면 `error` 로 `finish`. detached HEAD 에서 커밋해 고아 커밋을 만드는 것을 막는다 |
+| `stage` | `add -A` | exit≠0 → git 은 이 때 인덱스에 아무것도 올리지 않으므로, 그대로 진행하면 바뀐 것 없이 성공으로 보고된다. `error` 로 `finish` |
 | `status` | `diff --cached --name-status -z` → `stats` 계산 | 결과가 비면 `commit` 스킵 |
 | `commit` | `commit --no-verify -m <subject> -m <body>` | exit 128 + identity 오류 → §6 항목 적용 후 재시도 |
 | `remote-setup` | `remote get-url origin` | §6.2 참조. 원격이 전혀 없으면 `status` 를 `local-only` 로 두고 `finish` |
 | `fetch` | `fetch --prune origin` | exit≠0 → `remote-failed` 로 `finish` |
 | `merge-check` | `rev-parse --verify --quiet origin/<branch>` | exit≠0 → `merge`/`resolve` 건너뛰고 `push` |
-| `merge` | `merge --no-edit -m "mote: merge origin/<branch>" origin/<branch>` | exit 0 → `push` / unrelated histories → 재시도 / 그 외 → `resolve` 스텝 push |
+| `merge` | `merge --no-edit -m "mote: merge origin/<branch>" origin/<branch>` | exit 0 → `push` / unrelated histories → 재시도 / 그 외는 `MERGE_HEAD` 존재 여부로 갈린다: 있으면 충돌로 보고 `resolve` 스텝 push, 없으면 병합이 시작조차 못 한 것이므로 `remote-failed` 로 `finish` |
 | `resolve` | §5 충돌 해결 | 파일당 4스텝 push, 종료 후 병합 커밋 |
 | `push` | `push -u origin <branch>` | 거절 → §4.3 재시도 / 그 외 실패 → `remote-failed` 로 `finish` |
 | `finish` | `mote--session` 을 nil 로, 요약 `message`, `callback` 호출 | — |
@@ -278,8 +279,9 @@ t_remote = git log -1 --format=%ct MERGE_HEAD -- P
 | 5 | rebase 중단 | `heal` | `.git/rebase-merge` 또는 `.git/rebase-apply` | `rebase --abort` |
 | 6 | cherry-pick 중단 | `heal` | `.git/CHERRY_PICK_HEAD` | `cherry-pick --abort` |
 | 7 | `index.lock` 잔존 | `heal` | 파일 존재 & mtime 120초 초과 | 파일 삭제 |
-| 8 | detached HEAD | `heal` | `symbolic-ref -q HEAD` 실패 | `checkout <branch>`, 없으면 `checkout -b <branch>` |
-| 9 | 브랜치 불일치 | `heal` | `rev-parse --abbrev-ref HEAD` ≠ `mote-branch` | `checkout <branch>`, 없으면 `checkout -b <branch>` |
+| 8 | detached HEAD | `heal` | `symbolic-ref -q HEAD` 실패 | `checkout <branch>`. 실패하면 `rev-parse --verify refs/heads/<branch>` 로 브랜치가 정말 없을 때만 `checkout -b <branch>` |
+| 9 | 브랜치 불일치 | `heal` | `rev-parse --abbrev-ref HEAD` ≠ `mote-branch` | 항목 8 과 동일 |
+| 9a | HEAD 를 옮기지 못함 | `branch-verify` | 항목 8·9 시도 후에도 `symbolic-ref -q --short HEAD` ≠ `mote-branch` | `error` 로 종료. 이후 스텝은 모두 커밋·푸시이므로, detached HEAD 에서 계속하면 사용자의 커밋이 고아가 된 채 성공으로 보고된다 |
 | 10 | identity 미설정 | `commit` | exit 128 + stderr 에 `Please tell me who you are` | `-c user.name=mote -c user.email=mote@<HOST>` 로 재시도 |
 | 11 | origin URL 불일치 | `remote-setup` | `remote get-url origin` ≠ `mote-remote` (후자 non-nil) | `remote set-url origin <mote-remote>` |
 | 12 | origin 없음 | `remote-setup` | `remote get-url origin` 실패 | `mote-remote` non-nil → `remote add`; nil → `local-only` 로 종료 |
@@ -288,7 +290,8 @@ t_remote = git log -1 --format=%ct MERGE_HEAD -- P
 | 15 | 네트워크·인증 실패 | `fetch` / `push` | exit ≠ 0 | 로컬 커밋 보존, `remote-failed` 로 종료 |
 
 항목 7 의 mtime 조건은 다른 git 프로세스가 정상 작업 중인 잠금을 지우지 않기
-위한 안전장치다.
+위한 안전장치다. 그 대신 살아있는 잠금은 뒤이어지는 `add -A` 를 실패시키므로,
+`stage` 가 그 실패를 삼키지 않고 `error` 로 종료하는 것이 이 안전장치의 짝이다.
 
 ### 6.1 부트스트랩
 
@@ -314,9 +317,11 @@ t_remote = git log -1 --format=%ct MERGE_HEAD -- P
 
 - 모든 git 명령과 출력은 `mote-log-buffer` 에 타임스탬프와 함께 누적된다.
   버퍼는 read-only 이며 사용자가 언제든 열어볼 수 있다.
-- 세션이 `error` 로 끝나는 경우는 두 가지뿐이다: `git` 실행파일 부재,
-  `mote-root` 생성 실패. 그 외 모든 실패는 `remote-failed` 또는 `local-only` 로
-  **정상 종료**하며 다음 호출에서 복구된다.
+- 세션이 `error` 로 끝나는 경우는 다음 다섯 가지다: `git` 실행파일 부재,
+  `mote-root` 생성 실패, `add -A` 실패(인덱스가 비어 있으므로 진행할 수 없다),
+  HEAD 를 `mote-branch` 로 옮기지 못함, 커밋 실패. 이 다섯은 모두 "그대로 진행하면
+  사용자에게 거짓 성공을 보고하게 되는" 경우다. 그 외 모든 실패는 `remote-failed`
+  또는 `local-only` 로 **정상 종료**하며 다음 호출에서 복구된다.
 - Emacs 가 세션 도중 종료되면 프로세스도 함께 죽는다. 남은 `MERGE_HEAD` 나
   `index.lock` 은 다음 실행의 `heal` 이 정리한다.
 
@@ -355,7 +360,7 @@ latest-wins 판정이 결정적이다.
 ```sh
 emacs --batch -f batch-byte-compile mote.el
 emacs --batch -l ert -l mote.el -l test/mote-test.el -f ert-run-tests-batch-and-exit
-emacs --batch -l checkdoc -f checkdoc-file mote.el
+emacs --batch --eval '(progn (require (quote checkdoc)) (checkdoc-file "mote.el"))'
 ```
 
 바이트 컴파일 경고는 0 이어야 한다.

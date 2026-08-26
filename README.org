@@ -75,7 +75,7 @@ gives up quietly.
 emacs --batch -f batch-byte-compile mote.el
 emacs --batch -L . -L test -l ert -l mote.el -l test/mote-test.el \
       -f ert-run-tests-batch-and-exit
-emacs --batch -l checkdoc -f checkdoc-file mote.el
+emacs --batch --eval '(progn (require (quote checkdoc)) (checkdoc-file "mote.el"))'
 #+end_src
 
 * License
