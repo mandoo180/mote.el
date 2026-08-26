@@ -388,13 +388,118 @@ index.lock -- lives in the directory that pointer names."
                                 (mote--git-step
                                  (list "checkout" "-q" "-b" mote-branch)))))))))
 
+;;;; Steps -- local commit
+
+(defun mote--step-stage (session)
+  "Stage every change in SESSION's working tree."
+  (mote--git session '("add" "-A") #'ignore))
+
+(defun mote--parse-name-status (output)
+  "Parse NUL-separated name-status OUTPUT into a list of (STATUS . PATH).
+Rename and copy records carry a source path before the destination; the
+source is discarded."
+  (let ((fields (split-string output "\0" t))
+        (result nil))
+    (while fields
+      (let ((status (pop fields)))
+        (if (memq (aref status 0) '(?R ?C))
+            (progn (pop fields)
+                   (let ((dest (pop fields)))
+                     (when dest (push (cons status dest) result))))
+          (let ((path (pop fields)))
+            (when path (push (cons status path) result))))))
+    (nreverse result)))
+
+(defun mote--tally (entries)
+  "Count ENTRIES into a list of (ADDED MODIFIED DELETED)."
+  (let ((added 0) (modified 0) (deleted 0))
+    (dolist (entry entries)
+      (pcase (aref (car entry) 0)
+        (?A (cl-incf added))
+        (?D (cl-incf deleted))
+        (_ (cl-incf modified))))
+    (list added modified deleted)))
+
+(defun mote--step-status (session)
+  "Record what is staged in SESSION as change entries and counts."
+  (mote--git session '("diff" "--cached" "--name-status" "-z")
+             (lambda (s _code out)
+               (let ((entries (mote--parse-name-status out)))
+                 (setf (mote--session-changes s) entries
+                       (mote--session-stats s) (mote--tally entries))))))
+
+(defun mote--changes-body (entries)
+  "Render ENTRIES as commit body lines, at most twenty of them."
+  (let* ((limit 20)
+         (shown (seq-take entries limit))
+         (rest (- (length entries) (length shown)))
+         (lines (mapcar (lambda (e) (format "%s\t%s" (car e) (cdr e))) shown)))
+    (string-join (if (> rest 0)
+                     (append lines (list (format "… and %d more" rest)))
+                   lines)
+                 "\n")))
+
+(defun mote--now ()
+  "Return the current local time as YYYY-MM-DD HH:MM."
+  (format-time-string "%Y-%m-%d %H:%M"))
+
+(defun mote--commit-subject (session)
+  "Return the commit subject for SESSION."
+  (pcase-let ((`(,added ,modified ,deleted) (mote--session-stats session)))
+    (if (mote--session-initial-p session)
+        (format "mote: init %s %s" (mote--host) (mote--now))
+      (format "mote: sync %s %s (+%d ~%d -%d)"
+              (mote--host) (mote--now) added modified deleted))))
+
+(defun mote--identity-error-p (output)
+  "Return non-nil when OUTPUT is git complaining about a missing identity."
+  (string-match-p
+   "Please tell me who you are\\|empty ident name\\|unable to auto-detect email"
+   output))
+
+(defun mote--commit (session subject body &optional identity)
+  "Commit SUBJECT and BODY in SESSION.
+With IDENTITY non-nil, supply mote's fallback committer name and email.
+A first attempt that fails only for want of an identity is retried that
+way automatically."
+  (mote--git
+   session
+   (append (when identity
+             (list "-c" (concat "user.name=" mote--identity-name)
+                   "-c" (concat "user.email=" (mote--identity-email))))
+           (list "commit" "--no-verify" "-m" subject)
+           (when (and body (not (string-empty-p body))) (list "-m" body)))
+   (lambda (s code out)
+     (cond
+      ((zerop code) nil)
+      ((and (not identity) (mote--identity-error-p out))
+       (mote--log s ";; no git identity, retrying as %s" mote--identity-name)
+       (mote--push-steps
+        s (list (cons 'commit-retry
+                      (lambda (s2) (mote--commit s2 subject body t))))))
+      (t
+       (mote--log s ";; commit failed")
+       (mote--abort s 'error))))))
+
+(defun mote--step-commit (session)
+  "Commit SESSION's staged changes, skipping the commit when there are none."
+  (if (equal (mote--session-stats session) '(0 0 0))
+      (mote--next session)
+    (mote--commit session
+                  (mote--commit-subject session)
+                  (unless (mote--session-initial-p session)
+                    (mote--changes-body (mote--session-changes session))))))
+
 ;;;; Entry point
 
 (defun mote--pipeline ()
   "Return the ordered steps of one synchronisation."
   (list (cons 'preflight #'mote--step-preflight)
         (cons 'detect #'mote--step-detect)
-        (cons 'heal #'mote--step-heal)))
+        (cons 'heal #'mote--step-heal)
+        (cons 'stage #'mote--step-stage)
+        (cons 'status #'mote--step-status)
+        (cons 'commit #'mote--step-commit)))
 
 (defun mote--sync-1 (root callback)
   "Start a synchronisation of ROOT, calling CALLBACK with the session.

@@ -337,5 +337,105 @@
                       (cdr (mote-fixture-git root "symbolic-ref" "--short" "HEAD")))
                      "main")))))
 
+(ert-deftest mote-test-parse-name-status-handles-renames ()
+  "R and C records carry two paths; only the destination is kept."
+  (should (equal (mote--parse-name-status
+                  "A\0new.org\0M\0old.org\0R100\0from.org\0to.org\0D\0gone.org\0")
+                 '(("A" . "new.org")
+                   ("M" . "old.org")
+                   ("R100" . "to.org")
+                   ("D" . "gone.org")))))
+
+(ert-deftest mote-test-tally-buckets-statuses ()
+  "A counts as added, D as deleted, everything else as modified."
+  (should (equal (mote--tally '(("A" . "a") ("A" . "b") ("M" . "c")
+                                ("R100" . "d") ("D" . "e")))
+                 '(2 2 1))))
+
+(ert-deftest mote-test-changes-body-truncates-at-twenty ()
+  "Long change lists are cut off with a count of the remainder."
+  (let* ((entries (cl-loop for i from 1 to 25
+                           collect (cons "M" (format "n%02d.org" i))))
+         (body (mote--changes-body entries)))
+    (should (equal (length (split-string body "\n" t)) 21))
+    (should (string-suffix-p "… and 5 more" body))))
+
+(ert-deftest mote-test-commit-subject-format ()
+  "The sync subject carries host, timestamp and the change counts."
+  (mote-fixture-with fx
+    (let ((session (mote-test--session (plist-get fx :a))))
+      (setf (mote--session-stats session) (list 3 1 0))
+      (should (string-match-p
+               (format "\\`mote: sync %s [0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\} (\\+3 ~1 -0)\\'"
+                       (regexp-quote (mote--host)))
+               (mote--commit-subject session)))
+      (setf (mote--session-initial-p session) t)
+      (should (string-prefix-p (format "mote: init %s " (mote--host))
+                               (mote--commit-subject session))))))
+
+(ert-deftest mote-test-commits-local-changes ()
+  "New and changed files land in one commit with the generated message."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      (mote-fixture-write a "note.org" "changed\n")
+      (mote-fixture-write a "new.org" "new\n")
+      (mote-fixture-sync a)
+      (let ((subject (string-trim
+                      (cdr (mote-fixture-git a "log" "-1" "--format=%s"))))
+            (body (cdr (mote-fixture-git a "log" "-1" "--format=%b"))))
+        (should (string-match-p "\\`mote: sync .* (\\+1 ~1 -0)\\'" subject))
+        (should (string-match-p "^A\tnew\\.org$" body))
+        (should (string-match-p "^M\tnote\\.org$" body))))))
+
+(ert-deftest mote-test-no-changes-makes-no-commit ()
+  "Syncing a clean repository does not create an empty commit."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      (let ((before (string-trim (cdr (mote-fixture-git a "rev-list" "--count" "HEAD")))))
+        (mote-fixture-sync a)
+        (should (equal (string-trim
+                        (cdr (mote-fixture-git a "rev-list" "--count" "HEAD")))
+                       before))))))
+
+(ert-deftest mote-test-records-deletions ()
+  "Removing a file is committed as a deletion."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      (delete-file (expand-file-name "note.org" a))
+      (mote-fixture-sync a)
+      (should (string-match-p "(\\+0 ~0 -1)"
+                              (cdr (mote-fixture-git a "log" "-1" "--format=%s")))))))
+
+(ert-deftest mote-test-commits-without-git-identity ()
+  "A repository with no identity still gets a commit, authored by mote."
+  (mote-fixture-with fx
+    (let ((a (plist-get fx :a)))
+      (mote-test--seed a)
+      (mote-fixture-git a "config" "--unset" "user.name")
+      (mote-fixture-git a "config" "--unset" "user.email")
+      (mote-fixture-git a "config" "user.useConfigOnly" "true")
+      (mote-fixture-write a "note.org" "changed\n")
+      (mote-fixture-sync a)
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git a "log" "-1" "--format=%cn")))
+                     mote--identity-name))
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git a "log" "-1" "--format=%ce")))
+                     (mote--identity-email))))))
+
+(ert-deftest mote-test-initial-commit-on-empty-repository ()
+  "A repository with no commit gets an init commit holding .gitignore."
+  (mote-fixture-with fx
+    (let ((root (expand-file-name "fresh" (plist-get fx :root))))
+      (mote-fixture-sync root)
+      (should (equal (string-trim (cdr (mote-fixture-git root "rev-list" "--count" "HEAD")))
+                     "1"))
+      (should (string-prefix-p (format "mote: init %s " (mote--host))
+                               (string-trim
+                                (cdr (mote-fixture-git root "log" "-1" "--format=%s"))))))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here
