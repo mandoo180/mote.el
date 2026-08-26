@@ -515,28 +515,56 @@
         (should (mote-fixture-read b "from-a.org"))
         (should (mote-fixture-read b "from-b.org"))))))
 
+
 (ert-deftest mote-test-retries-a-rejected-push ()
-  "A push rejected because the remote moved is retried after fetching."
+  "A push rejected because the remote moved is retried after fetching.
+The full pipeline fetches before it pushes, so a rejection can only
+arise from the remote moving between those two steps.  This drives
+`mote--step-push' directly against a clone that is genuinely behind,
+which is the same state that race leaves behind."
   (mote-fixture-with fx
     (mote-test--with-remote fx
       (let ((a (plist-get fx :a))
-            (b (plist-get fx :b)))
+            (b (plist-get fx :b))
+            (finished nil))
         (mote-fixture-write a "shared.org" "base\n")
         (mote-fixture-commit a "base" 1756000000)
         (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        ;; B starts level with the remote.
         (mote-fixture-git b "fetch" "-q" "origin")
-        (mote-fixture-git b "reset" "-q" "--hard" "origin/main")
+        (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
         (mote-fixture-git b "branch" "-q" "--set-upstream-to" "origin/main" "main")
-        ;; A pushes something new that B has not seen.
+        ;; Both sides then move, and B never learns about A's commit.
         (mote-fixture-write a "only-a.org" "a\n")
         (mote-fixture-commit a "a2" 1756000100)
         (mote-fixture-git a "push" "-q" "origin" "main")
-        ;; B commits its own work and syncs; its first push must be rejected.
         (mote-fixture-write b "only-b.org" "b\n")
-        (let ((session (mote-fixture-sync b)))
+        (mote-fixture-commit b "b2" 1756000200)
+        (let ((session (mote-test--session b)))
+          (setf (mote--session-queue session)
+                (list (cons 'push #'mote--step-push))
+                (mote--session-callback session)
+                (lambda (_s) (setq finished t)))
+          (setq mote--session session)
+          (mote--next session)
+          (should (mote-test--wait (lambda () finished)))
           (should (eq (mote--session-status session) 'ok))
-          (should (> (mote--session-retries session) 0)))
-        (should (mote-fixture-read b "only-a.org"))))))
+          (should (equal (mote--session-retries session) 1)))
+        ;; The retry fetched and merged, so A's commit is now here...
+        (should (mote-fixture-read b "only-a.org"))
+        ;; ...and the second push landed.
+        (should (equal (string-trim (cdr (mote-fixture-git b "rev-parse" "HEAD")))
+                       (string-trim (cdr (mote-fixture-git (plist-get fx :origin)
+                                                           "rev-parse" "main")))))))))
+
+(ert-deftest mote-test-rejected-push-is-recognised ()
+  "Only non-fast-forward rejections are treated as retryable."
+  (should (mote--rejected-p
+           " ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs\n"))
+  (should (mote--rejected-p
+           "hint: Updates were rejected because the tip of your current branch is behind\nnon-fast-forward\n"))
+  (should-not (mote--rejected-p "fatal: Could not read from remote repository.\n"))
+  (should-not (mote--rejected-p "fatal: Authentication failed for 'https://example.com/x.git/'\n")))
 
 (ert-deftest mote-test-unreachable-remote-keeps-local-commit ()
   "A dead remote leaves the local commit in place and reports the failure."
