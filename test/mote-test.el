@@ -579,5 +579,64 @@ which is the same state that race leaves behind."
                       (cdr (mote-fixture-git a "rev-list" "--count" "HEAD")))
                      "1")))))
 
+(ert-deftest mote-test-push-retry-limit-is-enforced ()
+  "Once the retry budget is spent, a rejected push ends as remote-failed.
+Binding the limit to zero exercises the exhaustion branch on the first
+rejection, which is the only way to reach it deterministically: after a
+retry fetches and merges, the next push succeeds."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b))
+            (mote-push-retry-limit 0)
+            (finished nil))
+        (mote-fixture-write a "shared.org" "base\n")
+        (mote-fixture-commit a "base" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-git b "fetch" "-q" "origin")
+        (mote-fixture-git b "checkout" "-q" "-B" "main" "origin/main")
+        (mote-fixture-git b "branch" "-q" "--set-upstream-to" "origin/main" "main")
+        (mote-fixture-write a "only-a.org" "a\n")
+        (mote-fixture-commit a "a2" 1756000100)
+        (mote-fixture-git a "push" "-q" "origin" "main")
+        (mote-fixture-write b "only-b.org" "b\n")
+        (mote-fixture-commit b "b2" 1756000200)
+        (let ((session (mote-test--session b)))
+          (setf (mote--session-queue session)
+                (list (cons 'push #'mote--step-push))
+                (mote--session-callback session)
+                (lambda (_s) (setq finished t)))
+          (setq mote--session session)
+          (mote--next session)
+          (should (mote-test--wait (lambda () finished)))
+          (should (eq (mote--session-status session) 'remote-failed))
+          (should (equal (mote--session-retries session) 0)))
+        ;; Giving up must not cost the local commit.
+        (should (equal (string-trim
+                        (cdr (mote-fixture-git b "log" "-1" "--format=%s")))
+                       "b2"))))))
+
+(ert-deftest mote-test-unretryable-push-failure-aborts ()
+  "A push that fails for a reason fetching cannot fix is not retried."
+  (mote-fixture-with fx
+    (let* ((b (plist-get fx :b))
+           (mote-remote (expand-file-name "no-such.git" (plist-get fx :root)))
+           (finished nil))
+      (mote-test--seed b)
+      (mote-fixture-git b "remote" "set-url" "origin" mote-remote)
+      (let ((session (mote-test--session b)))
+        (setf (mote--session-queue session)
+              (list (cons 'push #'mote--step-push))
+              (mote--session-callback session)
+              (lambda (_s) (setq finished t)))
+        (setq mote--session session)
+        (mote--next session)
+        (should (mote-test--wait (lambda () finished)))
+        (should (eq (mote--session-status session) 'remote-failed))
+        (should (equal (mote--session-retries session) 0)))
+      (should (equal (string-trim
+                      (cdr (mote-fixture-git b "rev-list" "--count" "HEAD")))
+                     "1")))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here
