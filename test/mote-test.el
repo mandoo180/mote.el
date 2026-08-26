@@ -150,5 +150,18 @@
     (mote--finish session)
     (should (equal calls 1))))
 
+(ert-deftest mote-test-handler-error-ends-the-session ()
+  "A git handler that signals ends the run instead of wedging it."
+  (mote-fixture-with fx
+    (let* ((session (mote-test--session (plist-get fx :a)))
+           (finished nil))
+      (setf (mote--session-callback session) (lambda (_s) (setq finished t)))
+      (setq mote--session session)
+      (mote--git session '("rev-parse" "--git-dir")
+                 (lambda (_s _code _out) (error "Boom")))
+      (should (mote-test--wait (lambda () finished)))
+      (should (eq (mote--session-status session) 'error))
+      (should (null mote--session)))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

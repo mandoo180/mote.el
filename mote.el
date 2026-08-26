@@ -154,7 +154,8 @@ FMT and ARGS are passed to `format'."
 
 (defun mote--git-sentinel (session proc buffer handler)
   "Finish PROC for SESSION: call HANDLER, then advance the queue.
-BUFFER holds the combined output and is killed here."
+BUFFER holds the combined output and is killed here.  A handler that
+signals an error ends the run rather than leaving it in flight."
   (let ((code (process-exit-status proc))
         (output (with-current-buffer buffer (buffer-string))))
     (kill-buffer buffer)
@@ -163,7 +164,11 @@ BUFFER holds the combined output and is killed here."
     (setf (mote--session-timer session) nil
           (mote--session-proc session) nil)
     (mote--log session "[%d] %s" code (string-trim output))
-    (funcall handler session code output)
+    (condition-case err
+        (funcall handler session code output)
+      (error
+       (mote--log session ";; handler signalled: %S" err)
+       (mote--abort session 'error)))
     (mote--next session)))
 
 (defun mote--git (session args handler)
