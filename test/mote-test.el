@@ -606,6 +606,50 @@ reporting a successful sync."
         (should (mote-fixture-read b "from-a.org"))
         (should (mote-fixture-read b "from-b.org"))))))
 
+(ert-deftest mote-test-merges-without-git-identity ()
+  "A repository with no identity still merges, authored by mote.
+The merge writes a commit, so it needs the fallback identity that
+`mote--commit' already supplied.  Nothing here is staged, so the commit
+step is skipped and the merge is the first thing that needs an author --
+which is how this reached users as a bare \"remote unreachable\"."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "from-a.org" "a\n")
+        (mote-fixture-commit a "a" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-write b "from-b.org" "b\n")
+        (mote-fixture-commit b "b" 1756000100)
+        (mote-fixture-git b "config" "--unset" "user.name")
+        (mote-fixture-git b "config" "--unset" "user.email")
+        (mote-fixture-git b "config" "user.useConfigOnly" "true")
+        (let ((session (mote-fixture-sync b)))
+          (should (eq (mote--session-status session) 'ok)))
+        (should (mote-fixture-read b "from-a.org"))
+        (should (equal (string-trim
+                        (cdr (mote-fixture-git b "log" "-1" "--format=%cn")))
+                       mote--identity-name))))))
+
+(ert-deftest mote-test-merges-with-signing-forced-on ()
+  "A repository configured to sign every commit still merges unattended.
+`commit.gpgsign' applies to merge commits too, and pinentry cannot be
+suppressed through the environment."
+  (mote-fixture-with fx
+    (mote-test--with-remote fx
+      (let ((a (plist-get fx :a))
+            (b (plist-get fx :b)))
+        (mote-fixture-write a "from-a.org" "a\n")
+        (mote-fixture-commit a "a" 1756000000)
+        (mote-fixture-git a "push" "-q" "-u" "origin" "main")
+        (mote-fixture-write b "from-b.org" "b\n")
+        (mote-fixture-commit b "b" 1756000100)
+        (mote-fixture-git b "config" "commit.gpgsign" "true")
+        (mote-fixture-git b "config" "gpg.program" "/nonexistent/gpg")
+        (let ((session (mote-fixture-sync b)))
+          (should (eq (mote--session-status session) 'ok)))
+        (should (mote-fixture-read b "from-a.org"))))))
+
 (ert-deftest mote-test-blocked-merge-is-not-treated-as-a-conflict ()
   "A merge git refused to start ends the run instead of committing."
   (mote-fixture-with fx
@@ -633,7 +677,9 @@ reporting a successful sync."
           (setq mote--session session)
           (mote--next session)
           (should (mote-test--wait (lambda () finished)))
-          (should (eq (mote--session-status session) 'remote-failed))
+          ;; A blocked merge is a local failure: the fetch before it already
+          ;; proved the remote reachable.
+          (should (eq (mote--session-status session) 'error))
           (should (null (mote--session-conflicts session))))
         ;; The untracked file survives and no merge commit was made.
         (should (equal (mote-fixture-read b "extra.org") "untracked local\n"))

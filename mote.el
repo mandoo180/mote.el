@@ -604,14 +604,31 @@ gpg-agent's pinentry, which no environment variable can suppress."
                  (setf (mote--session-queue s)
                        (assq-delete-all 'merge (mote--session-queue s)))))))
 
-(defun mote--step-merge (session &optional unrelated)
+(defun mote--step-merge (session &optional unrelated identity)
   "Merge the remote branch into SESSION's branch.
-With UNRELATED non-nil, allow histories that share no commit.  A merge
-that stops on conflicts queues the resolution steps."
+With UNRELATED non-nil, allow histories that share no commit.  With
+IDENTITY non-nil, supply mote's fallback committer name and email.
+
+A merge that fast-forwards writes nothing, but any other merge writes a
+commit, so this needs the guards `mote--commit' has: a first attempt
+that fails only for want of an identity is retried that way, and
+signing is forced off so `commit.gpgsign' cannot stop the run on
+gpg-agent's pinentry.  Only the conflict path reached `mote--commit'
+before, which left a clean merge into a repository with no configured
+identity failing outright.
+
+Each retry preserves the other flag, because the two conditions are
+independent and a merge can need both.
+
+A merge that stops on conflicts queues the resolution steps."
   (let ((ref (mote--remote-ref)))
     (mote--git
      session
-     (append (list "merge" "--no-edit" "-m" (format "mote: merge %s" ref))
+     (append (list "-c" "commit.gpgsign=false")
+             (when identity
+               (list "-c" (concat "user.name=" mote--identity-name)
+                     "-c" (concat "user.email=" (mote--identity-email))))
+             (list "merge" "--no-edit" "-m" (format "mote: merge %s" ref))
              (when unrelated (list "--allow-unrelated-histories"))
              (list ref))
      (lambda (s code out)
@@ -621,14 +638,24 @@ that stops on conflicts queues the resolution steps."
               (string-match-p "refusing to merge unrelated histories" out))
          (mote--log s ";; retrying merge with unrelated histories allowed")
          (mote--push-steps
-          s (list (cons 'merge-unrelated (lambda (s2) (mote--step-merge s2 t))))))
+          s (list (cons 'merge-unrelated
+                        (lambda (s2) (mote--step-merge s2 t identity))))))
+        ((and (not identity) (mote--identity-error-p out))
+         (mote--log s ";; no git identity, retrying merge as %s"
+                    mote--identity-name)
+         (mote--push-steps
+          s (list (cons 'merge-identity
+                        (lambda (s2) (mote--step-merge s2 unrelated t))))))
         (t
          (if (file-exists-p (expand-file-name "MERGE_HEAD" (mote--git-dir s)))
              (progn
                (mote--log s ";; merge stopped, resolving conflicts")
                (mote--push-steps s (list (cons 'resolve #'mote--step-resolve))))
+           ;; Not `remote-failed': the fetch that precedes this step already
+           ;; proved the remote reachable, so whatever stopped the merge is
+           ;; local and must not be reported as a network problem.
            (mote--log s ";; merge never started")
-           (mote--abort s 'remote-failed))))))))
+           (mote--abort s 'error))))))))
 
 (defun mote--rejected-p (output)
   "Return non-nil when OUTPUT shows a push rejected for being behind."
