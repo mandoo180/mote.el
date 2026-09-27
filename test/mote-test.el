@@ -1095,6 +1095,15 @@ so every attribute a test touches is put back, last change first."
       (dolist (entry saved)
         (set-face-attribute (nth 0 entry) frame (nth 1 entry) (nth 2 entry))))))
 
+(defconst mote-test--export-default
+  '((default :foreground "#112233")
+    (default :background "#FAFAFA")
+    (default :weight normal)
+    (default :slant normal))
+  "Default face settings the theme export tests start from.
+A face takes what it leaves unspecified from the default face, so the
+expected tables depend on it, and batch Emacs leaves its colours unset.")
+
 (ert-deftest mote-test-export-faces-follow-the-app ()
   "The exported faces are the app's list without its `mote-' faces.
 The list is shared with the Mote app, so a face added or dropped here
@@ -1159,15 +1168,17 @@ the nearest colour it can show; the stub reproduces that."
 The app cannot follow Emacs inheritance through faces it does not know,
 so the exported file carries resolved values and no `inherit' key."
   (mote-test--with-faces
-   '((mote-test-export-parent :foreground "#AA0000")
-     (mote-test-export-parent :weight bold)
-     (mote-test-export-other :foreground "#00BB00")
-     (mote-test-export-child :inherit mote-test-export-parent))
+   (append mote-test--export-default
+           '((mote-test-export-parent :foreground "#AA0000")
+             (mote-test-export-parent :weight bold)
+             (mote-test-export-other :foreground "#00BB00")
+             (mote-test-export-child :inherit mote-test-export-parent)))
    (lambda ()
      (should (equal (mote--face-toml 'mote-test-export-child)
                     (concat "[faces.mote-test-export-child]\n"
                             "foreground = \"#AA0000\"\n"
                             "weight = \"bold\"\n"
+                            "slant = \"normal\"\n"
                             "underline = false\n"
                             "strike-through = false\n")))
      ;; With a list, the first face that has a value wins, as in Emacs.
@@ -1178,36 +1189,72 @@ so the exported file carries resolved values and no `inherit' key."
                     (concat "[faces.mote-test-export-child]\n"
                             "foreground = \"#00BB00\"\n"
                             "weight = \"bold\"\n"
+                            "slant = \"normal\"\n"
                             "underline = false\n"
                             "strike-through = false\n"))))))
 
-(ert-deftest mote-test-theme-export-leaves-out-unspecified ()
-  "Unspecified colours, weight and slant are not written.
-The app fills them from its own defaults.  Underline and strike-through
-are always written, so a face with nothing set still gets a table."
+(ert-deftest mote-test-theme-export-unspecified-takes-default ()
+  "Foreground, weight and slant a face leaves unspecified are the default's.
+Emacs draws the face with them.  Left out, they would come on the phone
+from the app's own default theme instead, so a face that sets only a
+background still gets the default foreground."
   (mote-test--with-faces
-   '((mote-test-export-parent :slant italic))
+   '((default :foreground "#112233")
+     (default :background "#FAFAFA")
+     (default :weight semibold)
+     (default :slant oblique)
+     (mote-test-export-parent :background "#00BB00"))
    (lambda ()
      (should (equal (mote--face-toml 'mote-test-export-parent)
                     (concat "[faces.mote-test-export-parent]\n"
+                            "foreground = \"#112233\"\n"
+                            "background = \"#00BB00\"\n"
+                            "weight = \"bold\"\n"
                             "slant = \"italic\"\n"
                             "underline = false\n"
-                            "strike-through = false\n")))
-     (should (equal (mote--face-toml 'mote-test-export-blank)
-                    (concat "[faces.mote-test-export-blank]\n"
-                            "underline = false\n"
                             "strike-through = false\n"))))))
+
+(ert-deftest mote-test-theme-export-background-only-where-the-app-has-one ()
+  "An unspecified background is the default's only where the app has one.
+The app's own themes give the faces in `mote-export-background-faces' a
+background, which would show on the phone in place of this Emacs's.
+Any other face without a background shows the default one there, as it
+does here, so its background is left out."
+  (should (equal mote-export-background-faces
+                 '(default region highlight mode-line lazy-highlight)))
+  (let ((mote-export-background-faces '(mote-test-export-other)))
+    (mote-test--with-faces
+     mote-test--export-default
+     (lambda ()
+       (should (equal (mote--face-toml 'mote-test-export-other)
+                      (concat "[faces.mote-test-export-other]\n"
+                              "foreground = \"#112233\"\n"
+                              "background = \"#FAFAFA\"\n"
+                              "weight = \"normal\"\n"
+                              "slant = \"normal\"\n"
+                              "underline = false\n"
+                              "strike-through = false\n")))
+       (should (equal (mote--face-toml 'mote-test-export-blank)
+                      (concat "[faces.mote-test-export-blank]\n"
+                              "foreground = \"#112233\"\n"
+                              "weight = \"normal\"\n"
+                              "slant = \"normal\"\n"
+                              "underline = false\n"
+                              "strike-through = false\n")))))))
 
 (ert-deftest mote-test-theme-export-converts-colour-names ()
   "X11 colour names are written as hex, which is all the app reads."
   (mote-test--with-faces
-   '((mote-test-export-parent :foreground "dark slate blue")
-     (mote-test-export-parent :background "LightGoldenrod2"))
+   (append mote-test--export-default
+           '((mote-test-export-parent :foreground "dark slate blue")
+             (mote-test-export-parent :background "LightGoldenrod2")))
    (lambda ()
      (should (equal (mote--face-toml 'mote-test-export-parent)
                     (concat "[faces.mote-test-export-parent]\n"
                             "foreground = \"#483D8B\"\n"
                             "background = \"#EEDC82\"\n"
+                            "weight = \"normal\"\n"
+                            "slant = \"normal\"\n"
                             "underline = false\n"
                             "strike-through = false\n"))))))
 
@@ -1250,14 +1297,18 @@ Their colours and styles have no counterpart in the app.  Off is
 written too: the app underlines `link' by default, so a theme that
 turns the line off in Emacs must turn it off on the phone as well."
   (mote-test--with-faces
-   '((mote-test-export-parent :underline (:color "red" :style wave))
-     (mote-test-export-parent :strike-through "red")
-     (mote-test-export-other :underline t)
-     (mote-test-export-child :inherit mote-test-export-other)
-     (mote-test-export-child :underline nil))
+   (append mote-test--export-default
+           '((mote-test-export-parent :underline (:color "red" :style wave))
+             (mote-test-export-parent :strike-through "red")
+             (mote-test-export-other :underline t)
+             (mote-test-export-child :inherit mote-test-export-other)
+             (mote-test-export-child :underline nil)))
    (lambda ()
      (should (equal (mote--face-toml 'mote-test-export-parent)
                     (concat "[faces.mote-test-export-parent]\n"
+                            "foreground = \"#112233\"\n"
+                            "weight = \"normal\"\n"
+                            "slant = \"normal\"\n"
                             "underline = true\n"
                             "strike-through = true\n")))
      (should (equal (mote--face-value 'mote-test-export-other :underline)
@@ -1274,16 +1325,18 @@ turns the line off in Emacs must turn it off on the phone as well."
   "An attribute set to `reset' takes the default face's value."
   (skip-unless (>= emacs-major-version 29))
   (mote-test--with-faces
-   '((default :foreground "#112233")
-     (mote-test-export-parent :underline t)
-     (mote-test-export-child :inherit mote-test-export-parent)
-     (mote-test-export-child :foreground reset)
-     (mote-test-export-child :underline reset))
+   (append mote-test--export-default
+           '((mote-test-export-parent :underline t)
+             (mote-test-export-child :inherit mote-test-export-parent)
+             (mote-test-export-child :foreground reset)
+             (mote-test-export-child :underline reset)))
    (lambda ()
      (should (equal (face-attribute 'default :underline) nil))
      (should (equal (mote--face-toml 'mote-test-export-child)
                     (concat "[faces.mote-test-export-child]\n"
                             "foreground = \"#112233\"\n"
+                            "weight = \"normal\"\n"
+                            "slant = \"normal\"\n"
                             "underline = false\n"
                             "strike-through = false\n"))))))
 
@@ -1293,30 +1346,56 @@ The app has no inverse video, so foreground and background trade
 places.  A colour the face leaves unspecified is the default face's,
 as when Emacs draws it, and inverse video is inherited like the rest."
   (mote-test--with-faces
-   '((default :foreground "#112233")
-     (default :background "#FAFAFA")
-     (mote-test-export-parent :foreground "#AA0000")
-     (mote-test-export-parent :background "#00BB00")
-     (mote-test-export-parent :inverse-video t)
-     (mote-test-export-child :inherit mote-test-export-parent)
-     (mote-test-export-other :inverse-video t))
+   (append mote-test--export-default
+           '((mote-test-export-parent :foreground "#AA0000")
+             (mote-test-export-parent :background "#00BB00")
+             (mote-test-export-parent :inverse-video t)
+             (mote-test-export-child :inherit mote-test-export-parent)
+             (mote-test-export-other :inverse-video t)))
    (lambda ()
      (should (equal (mote--face-toml 'mote-test-export-parent)
                     (concat "[faces.mote-test-export-parent]\n"
                             "foreground = \"#00BB00\"\n"
                             "background = \"#AA0000\"\n"
+                            "weight = \"normal\"\n"
+                            "slant = \"normal\"\n"
                             "underline = false\n"
                             "strike-through = false\n")))
      (should (equal (mote--face-toml 'mote-test-export-child)
                     (concat "[faces.mote-test-export-child]\n"
                             "foreground = \"#00BB00\"\n"
                             "background = \"#AA0000\"\n"
+                            "weight = \"normal\"\n"
+                            "slant = \"normal\"\n"
                             "underline = false\n"
                             "strike-through = false\n")))
      (should (equal (mote--face-toml 'mote-test-export-other)
                     (concat "[faces.mote-test-export-other]\n"
                             "foreground = \"#FAFAFA\"\n"
                             "background = \"#112233\"\n"
+                            "weight = \"normal\"\n"
+                            "slant = \"normal\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n"))))))
+
+(ert-deftest mote-test-theme-export-inverse-video-reset-is-off ()
+  "Inverse video set to `reset' does not swap the colours.
+`reset' means the default face's value, which the export takes as off."
+  (skip-unless (>= emacs-major-version 29))
+  (mote-test--with-faces
+   (append mote-test--export-default
+           '((mote-test-export-parent :foreground "#AA0000")
+             (mote-test-export-parent :background "#00BB00")
+             (mote-test-export-parent :inverse-video reset)))
+   (lambda ()
+     (should (eq (face-attribute 'mote-test-export-parent :inverse-video nil t)
+                 'reset))
+     (should (equal (mote--face-toml 'mote-test-export-parent)
+                    (concat "[faces.mote-test-export-parent]\n"
+                            "foreground = \"#AA0000\"\n"
+                            "background = \"#00BB00\"\n"
+                            "weight = \"normal\"\n"
+                            "slant = \"normal\"\n"
                             "underline = false\n"
                             "strike-through = false\n"))))))
 
@@ -1324,13 +1403,16 @@ as when Emacs draws it, and inverse video is inherited like the rest."
   "The cursor face contributes only its background, the caret colour.
 Inverse video does not change that: Emacs takes the caret colour from
 the cursor's background alone.  Without a background it is the one
-face that writes no table at all."
+face that writes no table at all: filled with the default background,
+as the faces in `mote-export-background-faces' are, it would hide the
+caret."
   (mote-test--with-faces
-   '((cursor :foreground "#00FF00")
-     (cursor :background "#FF0000")
-     (cursor :weight bold)
-     (cursor :underline t)
-     (cursor :inverse-video t))
+   (append mote-test--export-default
+           '((cursor :foreground "#00FF00")
+             (cursor :background "#FF0000")
+             (cursor :weight bold)
+             (cursor :underline t)
+             (cursor :inverse-video t)))
    (lambda ()
      (should (equal (mote--face-toml 'cursor)
                     "[faces.cursor]\nbackground = \"#FF0000\"\n"))
@@ -1379,12 +1461,16 @@ with nothing set still states its underline and strike-through."
                        "background = \"#FF0000\"\n"
                        "\n"
                        "[faces.mote-test-export-blank]\n"
+                       "foreground = \"#112233\"\n"
+                       "weight = \"normal\"\n"
+                       "slant = \"normal\"\n"
                        "underline = false\n"
                        "strike-through = false\n"
                        "\n"
                        "[faces.mote-test-export-parent]\n"
                        "foreground = \"#483D8B\"\n"
                        "weight = \"bold\"\n"
+                       "slant = \"normal\"\n"
                        "underline = false\n"
                        "strike-through = false\n"
                        "\n"

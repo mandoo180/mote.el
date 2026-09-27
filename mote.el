@@ -895,6 +895,18 @@ by the next call."
     mode-line minibuffer-prompt lazy-highlight)
   "Faces `mote-export-theme' writes, in the order the Mote app lists them.")
 
+;; The faces the Mote app's built-in themes give a background: the
+;; `roleFaces' mapping of lib/core/theme/builtin_themes.dart in the app
+;; repository, another contract between the two repositories.  Left
+;; without one, such a face would show the app's background on the phone
+;; instead of this Emacs's.  Any other face without a background shows
+;; the default one there, as it does here.  The app gives the cursor a
+;; background too, but the cursor stays out: its background is the caret
+;; colour, and the default background would hide the caret.
+(defconst mote-export-background-faces
+  '(default region highlight mode-line lazy-highlight)
+  "Faces whose background `mote-export-theme' always writes.")
+
 (defun mote--theme-id-default (theme)
   "Return the theme id `mote-export-theme' offers for THEME.
 THEME is a theme symbol, normally the first of `custom-enabled-themes',
@@ -950,20 +962,28 @@ covers every alias."
 
 (defun mote--face-value (face attribute &optional inverse)
   "Return FACE's ATTRIBUTE as a TOML value, or nil to leave it out.
-The value is read with inheritance followed, because Emacs themes
-inherit through faces the app does not know; only the final values
-travel.  INVERSE non-nil means FACE is drawn in inverse video, and its
-colours are written as Emacs draws them: :foreground gives FACE's
-background and :background its foreground."
+The value is the one Emacs draws FACE with.  Inheritance is followed,
+because Emacs themes inherit through faces the app does not know, and
+a foreground, weight or slant FACE leaves unspecified is the default
+face's: left out, the app would fill it from its own default theme.  A
+background is filled that way only for the faces in
+`mote-export-background-faces'.  INVERSE non-nil means FACE is drawn in
+inverse video, and its colours are written as Emacs draws them:
+:foreground gives FACE's background and :background its foreground."
   (let* ((swap (and inverse (memq attribute '(:foreground :background))))
          (source (cond ((not swap) attribute)
                        ((eq attribute :foreground) :background)
                        (t :foreground)))
-         (value (face-attribute face source nil t)))
-    ;; `reset' (Emacs 29) stands for the default face's value and is
-    ;; returned as is, even with inheritance followed.  A swapped colour
-    ;; the face leaves unspecified is drawn in the default face's too.
-    (when (or (eq value 'reset) (and swap (eq value 'unspecified)))
+         (value (face-attribute face source nil t))
+         ;; A swapped background always shows, whatever the face.
+         (fill (pcase attribute
+                 ((or :foreground :weight :slant) t)
+                 (:background
+                  (or swap (memq face mote-export-background-faces))))))
+    ;; Emacs draws an unspecified attribute in the default face's value.
+    ;; `reset' (Emacs 29) says so explicitly and is returned as is, even
+    ;; with inheritance followed.
+    (when (or (eq value 'reset) (and fill (eq value 'unspecified)))
       (setq value (face-attribute 'default source nil t)))
     (pcase attribute
       ;; Always written, off included: the app underlines some faces by
@@ -992,9 +1012,10 @@ strike-through."
         ;; The app has no inverse video, so such a face travels in the
         ;; colours Emacs draws it with.  Not the cursor: Emacs takes the
         ;; caret colour from its background alone.
+        ;; `reset' means the default face's value, taken as off.
         (inverse (and (not (eq face 'cursor))
                       (not (memq (face-attribute face :inverse-video nil t)
-                                 '(nil unspecified))))))
+                                 '(nil unspecified reset))))))
     (pcase-dolist (`(,attribute . ,key)
                    (if (eq face 'cursor)
                        ;; The app reads only the cursor's background: it is

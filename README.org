@@ -74,7 +74,14 @@ background mode and decides which of the two ~load-theme~ sets.
 
 The file holds final values only.  Emacs faces inherit through faces
 the app does not know, so ~mote-export-theme~ follows inheritance here
-and writes what it resolves to.  Colours become ~#RRGGBB~, weights fold
+and writes what it resolves to.  What a face leaves unspecified is
+written as the default face's value, the one Emacs draws it with, since
+the phone would otherwise fill it from the app's own theme: foreground,
+weight and slant always, the background only for ~default~, ~region~,
+~highlight~, ~mode-line~ and ~lazy-highlight~, which the app's themes
+give one.  Any other face without a background shows the default one
+on the phone as it does here, and the cursor contributes only its own
+background, the caret colour.  Colours become ~#RRGGBB~, weights fold
 to bold or normal, slants to italic or normal, and underline and
 strike-through are always written as on or off, without colour or
 style -- off too, so a face the app would underline stays plain on the
