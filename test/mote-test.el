@@ -1287,14 +1287,50 @@ turns the line off in Emacs must turn it off on the phone as well."
                             "underline = false\n"
                             "strike-through = false\n"))))))
 
+(ert-deftest mote-test-theme-export-inverse-video-swaps-colours ()
+  "An inverse-video face is written in the colours Emacs draws it with.
+The app has no inverse video, so foreground and background trade
+places.  A colour the face leaves unspecified is the default face's,
+as when Emacs draws it, and inverse video is inherited like the rest."
+  (mote-test--with-faces
+   '((default :foreground "#112233")
+     (default :background "#FAFAFA")
+     (mote-test-export-parent :foreground "#AA0000")
+     (mote-test-export-parent :background "#00BB00")
+     (mote-test-export-parent :inverse-video t)
+     (mote-test-export-child :inherit mote-test-export-parent)
+     (mote-test-export-other :inverse-video t))
+   (lambda ()
+     (should (equal (mote--face-toml 'mote-test-export-parent)
+                    (concat "[faces.mote-test-export-parent]\n"
+                            "foreground = \"#00BB00\"\n"
+                            "background = \"#AA0000\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n")))
+     (should (equal (mote--face-toml 'mote-test-export-child)
+                    (concat "[faces.mote-test-export-child]\n"
+                            "foreground = \"#00BB00\"\n"
+                            "background = \"#AA0000\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n")))
+     (should (equal (mote--face-toml 'mote-test-export-other)
+                    (concat "[faces.mote-test-export-other]\n"
+                            "foreground = \"#FAFAFA\"\n"
+                            "background = \"#112233\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n"))))))
+
 (ert-deftest mote-test-theme-export-cursor-is-background-only ()
   "The cursor face contributes only its background, the caret colour.
-Without a background it is the one face that writes no table at all."
+Inverse video does not change that: Emacs takes the caret colour from
+the cursor's background alone.  Without a background it is the one
+face that writes no table at all."
   (mote-test--with-faces
    '((cursor :foreground "#00FF00")
      (cursor :background "#FF0000")
      (cursor :weight bold)
-     (cursor :underline t))
+     (cursor :underline t)
+     (cursor :inverse-video t))
    (lambda ()
      (should (equal (mote--face-toml 'cursor)
                     "[faces.cursor]\nbackground = \"#FF0000\"\n"))

@@ -78,9 +78,11 @@ and writes what it resolves to.  Colours become ~#RRGGBB~, weights fold
 to bold or normal, slants to italic or normal, and underline and
 strike-through are always written as on or off, without colour or
 style -- off too, so a face the app would underline stays plain on the
-phone when it is plain here.  Faces of packages this Emacs has not
-loaded yet (open an Org or Markdown file first) are left out, and the
-app fills them from its own defaults.
+phone when it is plain here.  The app has no inverse video, so an
+inverse-video face is written with its foreground and background
+swapped, the colours Emacs draws it in.  Faces of packages this Emacs
+has not loaded yet (open an Org or Markdown file first) are left out,
+and the app fills them from its own defaults.
 
 Export from a graphical frame.  A terminal frame still writes the
 file, but themes pick terminal colours there, which may only

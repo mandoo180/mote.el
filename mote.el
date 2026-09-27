@@ -948,16 +948,23 @@ covers every alias."
          (have (funcall rank weight)))
     (and have (>= have (funcall rank 'semi-bold)))))
 
-(defun mote--face-value (face attribute)
+(defun mote--face-value (face attribute &optional inverse)
   "Return FACE's ATTRIBUTE as a TOML value, or nil to leave it out.
 The value is read with inheritance followed, because Emacs themes
 inherit through faces the app does not know; only the final values
-travel."
-  (let ((value (face-attribute face attribute nil t)))
+travel.  INVERSE non-nil means FACE is drawn in inverse video, and its
+colours are written as Emacs draws them: :foreground gives FACE's
+background and :background its foreground."
+  (let* ((swap (and inverse (memq attribute '(:foreground :background))))
+         (source (cond ((not swap) attribute)
+                       ((eq attribute :foreground) :background)
+                       (t :foreground)))
+         (value (face-attribute face source nil t)))
     ;; `reset' (Emacs 29) stands for the default face's value and is
-    ;; returned as is, even with inheritance followed.
-    (when (eq value 'reset)
-      (setq value (face-attribute 'default attribute nil t)))
+    ;; returned as is, even with inheritance followed.  A swapped colour
+    ;; the face leaves unspecified is drawn in the default face's too.
+    (when (or (eq value 'reset) (and swap (eq value 'unspecified)))
+      (setq value (face-attribute 'default source nil t)))
     (pcase attribute
       ;; Always written, off included: the app underlines some faces by
       ;; default (link, for one), so leaving out an Emacs face that shows
@@ -981,7 +988,13 @@ travel."
 Only the cursor face can come out empty, when its background is not a
 colour: every other face carries at least its underline and
 strike-through."
-  (let ((lines nil))
+  (let ((lines nil)
+        ;; The app has no inverse video, so such a face travels in the
+        ;; colours Emacs draws it with.  Not the cursor: Emacs takes the
+        ;; caret colour from its background alone.
+        (inverse (and (not (eq face 'cursor))
+                      (not (memq (face-attribute face :inverse-video nil t)
+                                 '(nil unspecified))))))
     (pcase-dolist (`(,attribute . ,key)
                    (if (eq face 'cursor)
                        ;; The app reads only the cursor's background: it is
@@ -993,7 +1006,7 @@ strike-through."
                        (:slant . "slant")
                        (:underline . "underline")
                        (:strike-through . "strike-through"))))
-      (let ((value (mote--face-value face attribute)))
+      (let ((value (mote--face-value face attribute inverse)))
         (when value (push (concat key " = " value) lines))))
     (when lines
       (concat (format "[faces.%s]\n" face)
