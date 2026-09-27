@@ -895,18 +895,6 @@ by the next call."
     mode-line minibuffer-prompt lazy-highlight)
   "Faces `mote-export-theme' writes, in the order the Mote app lists them.")
 
-;; The faces the Mote app's built-in themes give a background: the
-;; `roleFaces' mapping of lib/core/theme/builtin_themes.dart in the app
-;; repository, another contract between the two repositories.  Left
-;; without one, such a face would show the app's background on the phone
-;; instead of this Emacs's.  Any other face without a background shows
-;; the default one there, as it does here.  The app gives the cursor a
-;; background too, but the cursor stays out: its background is the caret
-;; colour, and the default background would hide the caret.
-(defconst mote-export-background-faces
-  '(default region highlight mode-line lazy-highlight)
-  "Faces whose background `mote-export-theme' always writes.")
-
 (defun mote--theme-id-default (theme)
   "Return the theme id `mote-export-theme' offers for THEME.
 THEME is a theme symbol, normally the first of `custom-enabled-themes',
@@ -960,79 +948,110 @@ covers every alias."
          (have (funcall rank weight)))
     (and have (>= have (funcall rank 'semi-bold)))))
 
-(defun mote--face-value (face attribute &optional inverse)
-  "Return FACE's ATTRIBUTE as a TOML value, or nil to leave it out.
-The value is the one Emacs draws FACE with.  Inheritance is followed,
-because Emacs themes inherit through faces the app does not know, and
-a foreground, weight or slant FACE leaves unspecified is the default
-face's: left out, the app would fill it from its own default theme.  A
-background is filled that way only for the faces in
-`mote-export-background-faces'.  INVERSE non-nil means FACE is drawn in
-inverse video, and its colours are written as Emacs draws them:
-:foreground gives FACE's background and :background its foreground."
+(defconst mote--export-attributes
+  '((:foreground . "foreground")
+    (:background . "background")
+    (:weight . "weight")
+    (:slant . "slant")
+    (:underline . "underline")
+    (:strike-through . "strike-through"))
+  "Face attributes `mote-export-theme' writes, with their keys in the file.")
+
+(defconst mote--toml-unspecified "\"unspecified\""
+  "What `mote-export-theme' writes for an attribute a face does not set.
+The Mote app reads it as Emacs reads `unspecified': the face leaves the
+attribute to the faces it inherits from and, where several faces cover
+the same text, to the faces beneath it.")
+
+(defun mote--inverse-p (value)
+  "Return non-nil when VALUE, an `:inverse-video' value, turns it on.
+`reset' means the default face's value, taken as off."
+  (not (memq value '(nil unspecified reset))))
+
+(defun mote--attribute-toml (attribute value)
+  "Return VALUE of ATTRIBUTE as a TOML value, or nil to leave it out.
+`unspecified' is written as \"unspecified\".  Underline and
+strike-through become on or off, without colour or style.  A colour
+that names no colour, such as a terminal's \"unspecified-fg\", is left
+out."
+  (cond
+   ((eq value 'unspecified) mote--toml-unspecified)
+   ((memq attribute '(:underline :strike-through)) (if value "true" "false"))
+   ((null value) nil)
+   ((memq attribute '(:foreground :background))
+    (let ((hex (mote--color-hex value)))
+      (and hex (mote--toml-string hex))))
+   ((eq attribute :weight)
+    (if (mote--weight-bold-p value) "\"bold\"" "\"normal\""))
+   ;; Every slant but upright is drawn slanted, the reverse ones
+   ;; included, as the app reads them (section 2.1 of its design).
+   (t (if (memq value '(normal r)) "\"normal\"" "\"italic\""))))
+
+(defun mote--export-value (get attribute inverse fill)
+  "Return what `mote-export-theme' writes for ATTRIBUTE, a TOML value or nil.
+GET is a function of one attribute returning its value as
+`face-attribute' does with inheritance followed: `unspecified' when
+nothing sets it.  Such a value is written as \"unspecified\", unless
+FILL is non-nil, when it is the default face's value instead, the one
+Emacs draws with.  `reset' (Emacs 29) always means the default face's
+value.  INVERSE non-nil means the face is drawn in inverse video, and
+its colours are written as Emacs draws them: :foreground gives the
+face's background and :background its foreground, the default face's
+where the face leaves one out."
   (let* ((swap (and inverse (memq attribute '(:foreground :background))))
          (source (cond ((not swap) attribute)
                        ((eq attribute :foreground) :background)
                        (t :foreground)))
-         (value (face-attribute face source nil t))
-         ;; A swapped background always shows, whatever the face.
-         (fill (pcase attribute
-                 ((or :foreground :weight :slant) t)
-                 (:background
-                  (or swap (memq face mote-export-background-faces))))))
-    ;; Emacs draws an unspecified attribute in the default face's value.
-    ;; `reset' (Emacs 29) says so explicitly and is returned as is, even
-    ;; with inheritance followed.
-    (when (or (eq value 'reset) (and fill (eq value 'unspecified)))
+         (value (funcall get source)))
+    (when (or (eq value 'reset)
+              (and (eq value 'unspecified) (or swap fill)))
       (setq value (face-attribute 'default source nil t)))
-    (pcase attribute
-      ;; Always written, off included: the app underlines some faces by
-      ;; default (link, for one), so leaving out an Emacs face that shows
-      ;; no line would draw one on the phone.  Colours and styles of the
-      ;; lines have no counterpart in the app.
-      ((or :underline :strike-through)
-       (if (memq value '(nil unspecified)) "false" "true"))
-      ((guard (memq value '(nil unspecified))) nil)
-      ((or :foreground :background)
-       (let ((hex (mote--color-hex value)))
-         (and hex (mote--toml-string hex))))
-      (:weight
-       (if (mote--weight-bold-p value) "\"bold\"" "\"normal\""))
-      (:slant
-       ;; Every slant but upright is drawn slanted, the reverse ones
-       ;; included, as the app reads them (section 2.1 of its design).
-       (if (memq value '(normal r)) "\"normal\"" "\"italic\"")))))
+    (mote--attribute-toml attribute value)))
+
+(defun mote--face-value (face attribute &optional inverse)
+  "Return FACE's ATTRIBUTE as a TOML value, or nil to leave it out.
+Inheritance is followed, because Emacs themes inherit through faces the
+app does not know.  What FACE leaves unspecified all the way is written
+as \"unspecified\".  INVERSE is as for `mote--export-value'."
+  (mote--export-value (lambda (source) (face-attribute face source nil t))
+                      attribute inverse nil))
+
+(defun mote--table-toml (name get inverse fill)
+  "Return the TOML table of the face NAME whose attributes GET returns.
+GET, INVERSE and FILL are as for `mote--export-value'.  Every attribute
+is written, as a value or as \"unspecified\", and an empty inherit list
+follows: the values already follow Emacs inheritance, and the app's own
+inheritance must not fill what Emacs leaves unspecified.  The default
+face writes values only: the app refuses \"unspecified\" there, and
+Emacs always specifies it on a graphical frame."
+  (let ((lines nil))
+    (pcase-dolist (`(,attribute . ,key) mote--export-attributes)
+      (let ((value (mote--export-value get attribute inverse fill)))
+        (when (and value
+                   (not (and (eq name 'default)
+                             (equal value mote--toml-unspecified))))
+          (push (concat key " = " value) lines))))
+    (unless (eq name 'default)
+      (push "inherit = []" lines))
+    (concat (format "[faces.%s]\n" name)
+            (string-join (nreverse lines) "\n")
+            "\n")))
 
 (defun mote--face-toml (face)
   "Return the TOML table for FACE, or nil when it has nothing to write.
-Only the cursor face can come out empty, when its background is not a
-colour: every other face carries at least its underline and
-strike-through."
-  (let ((lines nil)
-        ;; The app has no inverse video, so such a face travels in the
-        ;; colours Emacs draws it with.  Not the cursor: Emacs takes the
-        ;; caret colour from its background alone.
-        ;; `reset' means the default face's value, taken as off.
-        (inverse (and (not (eq face 'cursor))
-                      (not (memq (face-attribute face :inverse-video nil t)
-                                 '(nil unspecified reset))))))
-    (pcase-dolist (`(,attribute . ,key)
-                   (if (eq face 'cursor)
-                       ;; The app reads only the cursor's background: it is
-                       ;; the caret colour, as in Emacs.
-                       '((:background . "background"))
-                     '((:foreground . "foreground")
-                       (:background . "background")
-                       (:weight . "weight")
-                       (:slant . "slant")
-                       (:underline . "underline")
-                       (:strike-through . "strike-through"))))
-      (let ((value (mote--face-value face attribute inverse)))
-        (when value (push (concat key " = " value) lines))))
-    (when lines
-      (concat (format "[faces.%s]\n" face)
-              (string-join (nreverse lines) "\n")
-              "\n"))))
+The cursor contributes only its background, the caret colour, and
+nothing when that is not a colour: the app keeps its own caret colour
+rather than lose the caret.  Any other face goes through
+`mote--table-toml'."
+  (if (eq face 'cursor)
+      (let ((value (mote--face-value 'cursor :background)))
+        (and value
+             (not (equal value mote--toml-unspecified))
+             (format "[faces.cursor]\nbackground = %s\n" value)))
+    (mote--table-toml face
+                      (lambda (source) (face-attribute face source nil t))
+                      (mote--inverse-p (face-attribute face :inverse-video nil t))
+                      nil)))
 
 (defun mote--theme-toml (id name kind)
   "Return a Mote theme file describing the faces of the selected frame.

@@ -74,22 +74,20 @@ background mode and decides which of the two ~load-theme~ sets.
 
 The file holds final values only.  Emacs faces inherit through faces
 the app does not know, so ~mote-export-theme~ follows inheritance here
-and writes what it resolves to.  What a face leaves unspecified is
-written as the default face's value, the one Emacs draws it with, since
-the phone would otherwise fill it from the app's own theme: foreground,
-weight and slant always, the background only for ~default~, ~region~,
-~highlight~, ~mode-line~ and ~lazy-highlight~, which the app's themes
-give one.  Any other face without a background shows the default one
-on the phone as it does here, and the cursor contributes only its own
-background, the caret colour.  Colours become ~#RRGGBB~, weights fold
-to bold or normal, slants to italic or normal, and underline and
-strike-through are always written as on or off, without colour or
-style -- off too, so a face the app would underline stays plain on the
-phone when it is plain here.  The app has no inverse video, so an
-inverse-video face is written with its foreground and background
-swapped, the colours Emacs draws it in.  Faces of packages this Emacs
-has not loaded yet (open an Org or Markdown file first) are left out,
-and the app fills them from its own defaults.
+and writes what it resolves to, with an empty ~inherit~ list.  What a
+face leaves unspecified all the way is written as ~"unspecified"~,
+which the app reads as Emacs does: where several faces cover the same
+text, as a heading and a bold word in it, the faces beneath show
+through, and alone the default face's value shows.  The cursor
+contributes only its own background, the caret colour.  Colours become
+~#RRGGBB~, weights fold to bold or normal, slants to italic or normal,
+and underline and strike-through to on or off, without colour or
+style.  The app has no inverse video, so an inverse-video face is
+written with its foreground and background swapped, the colours Emacs
+draws it in.  Faces of packages this Emacs has not loaded yet (open an
+Org or Markdown file first) are left out, and the app fills them from
+its own defaults.  An older Mote app warns about each ~"unspecified"~
+line and fills it from its own theme instead.
 
 Export from a graphical frame.  A terminal frame still writes the
 file, but themes pick terminal colours there, which may only
