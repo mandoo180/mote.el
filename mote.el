@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026
 
 ;; Author: Kyeongsoo Choi <mandoo180@gmail.com>
-;; Version: 0.2.0
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: convenience, files, vc
 ;; URL: https://github.com/mandoo180/mote.el
@@ -872,28 +872,31 @@ by the next call."
 ;; The source of this list is section 2.3 of the Mote app's design
 ;; document for themes and faces,
 ;; docs/superpowers/specs/2026-09-27-mote-p19-theme-faces-design.md in the
-;; app repository.  It is a contract between the two repositories: the
-;; order follows the app's face groups, and the faces the app names with
-;; a `mote-' prefix are left out because Emacs has no such face.  A face
-;; the app does not know is ignored there with a warning, so a stale copy
-;; loses colours rather than breaking the phone.
+;; app repository, as plan 20 widened it
+;; (docs/superpowers/specs/2026-09-27-mote-p20-face-fidelity-design.md,
+;; sections 4.1 and 5.3).  It is a contract between the two repositories:
+;; the order follows the app's face groups, the faces `mote-export-probes'
+;; reads are left out, and so are the faces the app names with a `mote-'
+;; prefix, because Emacs has no such face.  A face the app does not know
+;; is ignored there with a warning, so a stale copy loses colours rather
+;; than breaking the phone.
 (defconst mote-export-faces
-  '(default cursor region highlight shadow bold italic link
+  '(default cursor region highlight shadow bold italic underline link
     font-lock-comment-face font-lock-string-face
     font-lock-keyword-face font-lock-number-face
     outline-1 outline-2 outline-3 outline-4
     outline-5 outline-6 outline-7 outline-8
     org-level-1 org-level-2 org-level-3 org-level-4
     org-level-5 org-level-6 org-level-7 org-level-8
-    org-todo org-done org-tag org-link org-code org-verbatim org-block
-    org-meta-line org-block-begin-line org-block-end-line org-checkbox
+    org-link org-code org-verbatim org-block
+    org-meta-line org-block-begin-line org-block-end-line
     markdown-header-face-1 markdown-header-face-2 markdown-header-face-3
     markdown-header-face-4 markdown-header-face-5 markdown-header-face-6
     markdown-bold-face markdown-italic-face markdown-code-face
     markdown-inline-code-face markdown-markup-face markdown-link-face
     markdown-gfm-checkbox-face
     mode-line minibuffer-prompt lazy-highlight)
-  "Faces `mote-export-theme' writes, in the order the Mote app lists them.")
+  "Faces `mote-export-theme' reads by name, in the order the app lists them.")
 
 (defun mote--theme-id-default (theme)
   "Return the theme id `mote-export-theme' offers for THEME.
@@ -1053,15 +1056,142 @@ rather than lose the caret.  Any other face goes through
                       (mote--inverse-p (face-attribute face :inverse-video nil t))
                       nil)))
 
+(defconst mote-export-probe-text
+  (concat "* TODO mote\n"
+          "* DONE mote\n"
+          "* mote :mote:\n"
+          "- [ ] mote\n"
+          "- [X] mote\n"
+          "#+TITLE: mote\n"
+          "#+AUTHOR: mote\n"
+          "+mote+\n")
+  "Org text `mote-export-theme' fontifies to see how Org draws its syntax.")
+
+;; Section 5.2 of the app's plan 20 design document is the source of this
+;; table, another contract between the two repositories.  The app draws
+;; each of these faces on a piece of Org syntax, and Emacs does not always
+;; draw that syntax with the face of the same name: org-modern draws the
+;; keywords and tags as labels of its own, `org-todo-keyword-faces' gives
+;; keywords their own faces, and a checked box is drawn like an empty one.
+;; So the face is read from where the syntax is drawn.
+(defconst mote-export-probes
+  '((org-todo 1 2 (org-level-1))
+    (org-done 2 2 (org-level-1))
+    (org-headline-done 2 7 (org-level-1))
+    (org-tag 3 8 (org-level-1))
+    (org-checkbox 4 2 nil)
+    (mote-checkbox-done 5 2 nil)
+    (org-document-title 6 9 nil)
+    (org-document-info 7 10 nil)
+    (org-document-info-keyword 6 2 nil)
+    (mote-strike-through 8 1 nil))
+  "Faces `mote-export-theme' reads from `mote-export-probe-text'.
+Each entry is (FACE LINE COLUMN BASE): the app face, where in the text
+its syntax is drawn, and the faces the app draws beneath it there.")
+
+(declare-function org-mode "org" ())
+
+(defun mote--face-list (value)
+  "Return the face property VALUE as a list of faces, first on top.
+VALUE is a face name, an anonymous face (a property list), or a list of
+those."
+  (cond ((null value) nil)
+        ((symbolp value) (list value))
+        ((keywordp (car value)) (list value))
+        (t value)))
+
+(defun mote--one-face-attribute (face attribute)
+  "Return ATTRIBUTE of FACE, a face name or an anonymous face.
+A name follows its inheritance; an anonymous face follows its :inherit.
+Return `unspecified' when nothing sets it."
+  (cond ((and (symbolp face) (facep face))
+         (face-attribute face attribute nil t))
+        ((and (consp face) (keywordp (car face)))
+         (if (plist-member face attribute)
+             (plist-get face attribute)
+           (let ((parent (plist-get face :inherit)))
+             (if parent
+                 (mote--face-list-attribute parent attribute)
+               'unspecified))))
+        (t 'unspecified)))
+
+(defun mote--face-list-attribute (faces attribute)
+  "Return ATTRIBUTE of the face property value FACES, as Emacs merges it.
+The first face that sets ATTRIBUTE wins.  Return `unspecified' when
+none does."
+  (catch 'found
+    (dolist (face (mote--face-list faces) 'unspecified)
+      (let ((value (mote--one-face-attribute face attribute)))
+        (unless (eq value 'unspecified)
+          (throw 'found value))))))
+
+(defun mote--probe-faces ()
+  "Return how Org draws each of `mote-export-probes'.
+The result is a list of (FACE . VALUE), VALUE being the face property at
+the probe, in the order of the probes.  `mote-export-probe-text' is
+fontified in Org mode with the user's hooks, so packages that change
+how Org draws take part."
+  (require 'org)
+  (with-temp-buffer
+    (insert mote-export-probe-text)
+    (org-mode)
+    (font-lock-ensure)
+    (mapcar (lambda (probe)
+              (goto-char (point-min))
+              (forward-line (1- (nth 1 probe)))
+              (forward-char (nth 2 probe))
+              (cons (car probe) (get-char-property (point) 'face)))
+            mote-export-probes)))
+
+(defun mote--probe-table (face value base)
+  "Return the TOML table for probe FACE drawn with face property VALUE.
+BASE lists the faces the app draws beneath FACE.  When VALUE ends with
+them, Emacs merged its own faces over them as the app will, and what
+those leave unspecified is written as \"unspecified\" so that the faces
+beneath show through.  When it does not, Emacs drew over them, and the
+default face's values are written instead."
+  (let* ((faces (mote--face-list value))
+         (merged (and base (equal (last faces (length base)) base)))
+         (own (if merged (butlast faces (length base)) faces)))
+    (mote--table-toml face
+                      (lambda (attribute)
+                        (mote--face-list-attribute own attribute))
+                      (mote--inverse-p
+                       (mote--face-list-attribute own :inverse-video))
+                      (and base (not merged)))))
+
+(defun mote--probe-tables ()
+  "Return the TOML tables of the faces in `mote-export-probes'.
+When Org fails, the probe faces that are Emacs faces are read by name
+instead, and a message says so."
+  (condition-case err
+      (mapcar (lambda (drawn)
+                (mote--probe-table (car drawn) (cdr drawn)
+                                   (nth 3 (assq (car drawn) mote-export-probes))))
+              (mote--probe-faces))
+    (error
+     (message "mote: org probe failed (%s); exported org faces by name"
+              (error-message-string err))
+     (delq nil
+           (mapcar (lambda (probe)
+                     (let ((face (car probe)))
+                       (and (facep face)
+                            (not (string-prefix-p "mote-" (symbol-name face)))
+                            (mote--face-toml face))))
+                   mote-export-probes)))))
+
 (defun mote--theme-toml (id name kind)
   "Return a Mote theme file describing the faces of the selected frame.
 ID is the theme id the file will be saved under, NAME the name shown on
 the phone, and KIND the frame's `background-mode': `light' gives a light
 theme, anything else a dark one.  Faces in `mote-export-faces' that are
-not defined here are left out; the app fills them in."
-  (let ((tables (delq nil (mapcar (lambda (face)
-                                    (and (facep face) (mote--face-toml face)))
-                                  mote-export-faces))))
+not defined here are left out; the app fills them in.  The faces of
+`mote-export-probes' follow, read from how Org draws them."
+  (let ((tables (append
+                 (delq nil (mapcar (lambda (face)
+                                     (and (facep face) (mote--face-toml face)))
+                                   mote-export-faces))
+                 (and mote-export-probes (mote--probe-tables)))))
     (concat
      "# Exported from Emacs by mote-export-theme.  On the phone: load-theme "
      id "\n"

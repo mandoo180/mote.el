@@ -89,6 +89,17 @@ Org or Markdown file first) are left out, and the app fills them from
 its own defaults.  An older Mote app warns about each ~"unspecified"~
 line and fills it from its own theme instead.
 
+Org keywords, tags, checkboxes, the done headline, the document title
+and strike-through are read differently: ~mote-export-theme~ fontifies
+a small Org text in Org mode, with your hooks, and writes the face each
+of them is drawn with, so packages such as org-modern and settings such
+as ~org-todo-keyword-faces~ come along.  Where Emacs drew one over the
+heading instead of merging with it, what it leaves unspecified is
+written as the default face's value, so the heading does not show
+through on the phone either.  If Org fails, those faces are read by
+name and a message says so.  Only faces travel: bullets, hidden markers
+and rounded labels stay on the desktop.
+
 Export from a graphical frame.  A terminal frame still writes the
 file, but themes pick terminal colours there, which may only
 approximate the graphical ones.

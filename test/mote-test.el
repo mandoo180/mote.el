@@ -1062,6 +1062,8 @@ would otherwise abort a healthy run over an incidental warning."
 
 ;;;; Theme export
 
+(require 'org)
+
 (defface mote-test-export-parent '((t))
   "Fixture face for the theme export tests."
   :group 'mote)
@@ -1107,14 +1109,17 @@ face leaves out.  Batch Emacs leaves the default's colours unset, which
 is why the fixture sets them.")
 
 (ert-deftest mote-test-export-faces-follow-the-app ()
-  "The exported faces are the app's list without its `mote-' faces.
+  "The faces read by name are the app's list without probes and `mote-' faces.
 The list is shared with the Mote app, so a face added or dropped here
 by accident silently changes what reaches the phone."
-  (should (= (length mote-export-faces) 55))
-  (should (equal (length (delete-dups (copy-sequence mote-export-faces))) 55))
+  (should (= (length mote-export-faces) 52))
+  (should (equal (length (delete-dups (copy-sequence mote-export-faces))) 52))
   (should-not (seq-find (lambda (face)
                           (string-prefix-p "mote-" (symbol-name face)))
                         mote-export-faces))
+  (should (memq 'underline mote-export-faces))
+  (dolist (probe mote-export-probes)
+    (should-not (memq (car probe) mote-export-faces)))
   (should (eq (car mote-export-faces) 'default))
   (should (eq (car (last mote-export-faces)) 'lazy-highlight)))
 
@@ -1425,7 +1430,8 @@ package is not loaded, is left for the app to fill in.  A defined face
 with nothing set states every attribute as unspecified."
   (let ((mote-export-faces '(default cursor mote-test-export-undefined
                               mote-test-export-blank mote-test-export-parent
-                              mote-test-export-child)))
+                              mote-test-export-child))
+        (mote-export-probes nil))
     (should-not (facep 'mote-test-export-undefined))
     (mote-test--with-faces
      '((default :foreground "#112233")
@@ -1499,7 +1505,8 @@ every attribute, so what the default leaves unspecified is left out."
 
 (ert-deftest mote-test-theme-toml-kind-and-name ()
   "Only a light background makes a light theme, and the name is escaped."
-  (let ((mote-export-faces nil))
+  (let ((mote-export-faces nil)
+        (mote-export-probes nil))
     (should (string-match-p "^kind = \"dark\"$"
                             (mote--theme-toml "x" "X" 'dark)))
     (should (string-match-p "^kind = \"dark\"$"
@@ -1516,6 +1523,7 @@ what `y-or-n-p' returns, :graphic what `display-graphic-p' returns and
 plist of :file, :text (nil when no file), :messages and :asked."
   (let* ((root (make-temp-file "mote-theme-" t))
          (mote-root root)
+         (mote-export-probes nil)
          (custom-enabled-themes (plist-get bindings :themes))
          (file (expand-file-name (concat ".mote/themes/" id ".toml") root))
          (messages nil)
@@ -1543,7 +1551,8 @@ plist of :file, :text (nil when no file), :messages and :asked."
 
 (ert-deftest mote-test-export-theme-writes-the-file ()
   "The command writes what `mote--theme-toml' renders and says what next."
-  (let ((mote-export-faces '(mote-test-export-parent)))
+  (let ((mote-export-faces '(mote-test-export-parent))
+        (mote-export-probes nil))
     (mote-test--with-faces
      '((mote-test-export-parent :foreground "#AA0000"))
      (lambda ()
@@ -1641,6 +1650,196 @@ The app reads TOML, which is UTF-8, and a theme name can be non-ASCII."
           (should (file-exists-p
                    (expand-file-name ".mote/themes/modus-vivendi.toml" root))))
       (delete-directory root t))))
+
+(ert-deftest mote-test-export-probes-point-at-their-characters ()
+  "Each probe reads the character its syntax is drawn on.
+A line or column off by one reads a neighbour's face, the heading's for
+a keyword, and nothing fails."
+  (let ((lines (split-string mote-export-probe-text "\n")))
+    (dolist (case '((org-todo . ?T) (org-done . ?D) (org-headline-done . ?m)
+                    (org-tag . ?m) (org-checkbox . ?\[)
+                    (mote-checkbox-done . ?\[) (org-document-title . ?m)
+                    (org-document-info . ?m) (org-document-info-keyword . ?T)
+                    (mote-strike-through . ?m)))
+      (pcase-let ((`(,_ ,line ,column ,_) (assq (car case) mote-export-probes)))
+        (should (equal (cons (car case) (aref (nth (1- line) lines) column))
+                       case))))
+    ;; The tag's m, not the heading's.
+    (pcase-let ((`(,_ ,line ,column ,_) (assq 'org-tag mote-export-probes)))
+      (should (eq (aref (nth (1- line) lines) (1- column)) ?:)))
+    (should (= (length mote-export-probes) 10))))
+
+(ert-deftest mote-test-face-list-attribute ()
+  "Attributes of a face property value follow Emacs merging.
+The first face that sets the attribute wins; a name follows its
+inheritance and an anonymous face its :inherit."
+  (mote-test--with-faces
+   '((mote-test-export-parent :foreground "#AA0000")
+     (mote-test-export-other :weight bold)
+     (mote-test-export-child :inherit mote-test-export-parent))
+   (lambda ()
+     (should (equal (mote--face-list-attribute 'mote-test-export-child :foreground)
+                    "#AA0000"))
+     (should (equal (mote--face-list-attribute
+                     '(mote-test-export-other mote-test-export-parent) :foreground)
+                    "#AA0000"))
+     (should (eq (mote--face-list-attribute
+                  '(mote-test-export-other mote-test-export-parent) :weight)
+                 'bold))
+     (should (equal (mote--face-list-attribute '(:foreground "#00BB00") :foreground)
+                    "#00BB00"))
+     (should (equal (mote--face-list-attribute
+                     '((:weight bold) mote-test-export-parent) :foreground)
+                    "#AA0000"))
+     (should (equal (mote--face-list-attribute
+                     '(:inherit mote-test-export-parent) :foreground)
+                    "#AA0000"))
+     (should (eq (mote--face-list-attribute '(:underline nil) :underline) nil))
+     (should (eq (mote--face-list-attribute 'mote-test-export-blank :foreground)
+                 'unspecified))
+     (should (eq (mote--face-list-attribute nil :foreground) 'unspecified)))))
+
+(ert-deftest mote-test-probe-table-merged ()
+  "A probe drawn over the faces the app puts beneath leaves the rest to them.
+Emacs merged its faces over the heading, as the app will, so what they
+do not set is written as \"unspecified\" and the heading shows through."
+  (mote-test--with-faces
+   (append mote-test--export-default
+           '((mote-test-export-parent :foreground "#AA0000")
+             (mote-test-export-parent :weight bold)))
+   (lambda ()
+     (should (equal (mote--probe-table 'org-todo
+                                       '(mote-test-export-parent org-level-1)
+                                       '(org-level-1))
+                    (concat "[faces.org-todo]\n"
+                            "foreground = \"#AA0000\"\n"
+                            "background = \"unspecified\"\n"
+                            "weight = \"bold\"\n"
+                            "slant = \"unspecified\"\n"
+                            "underline = \"unspecified\"\n"
+                            "strike-through = \"unspecified\"\n"
+                            "inherit = []\n"))))))
+
+(ert-deftest mote-test-probe-table-drawn-over ()
+  "A probe drawn without the faces beneath it takes the default's values.
+Packages such as org-modern draw a keyword over the heading; the app
+merges instead, so what the keyword leaves unspecified is written as
+the default face's, and the heading does not show through."
+  (mote-test--with-faces
+   mote-test--export-default
+   (lambda ()
+     (should (equal (mote--probe-table 'org-todo
+                                       '(:background "#123456" :weight bold)
+                                       '(org-level-1))
+                    (concat "[faces.org-todo]\n"
+                            "foreground = \"#112233\"\n"
+                            "background = \"#123456\"\n"
+                            "weight = \"bold\"\n"
+                            "slant = \"normal\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n"
+                            "inherit = []\n"))))))
+
+(ert-deftest mote-test-probe-table-without-base ()
+  "A probe with nothing beneath it writes \"unspecified\" for what it leaves.
+The app draws such a face alone, where unspecified means the default's."
+  (mote-test--with-faces
+   mote-test--export-default
+   (lambda ()
+     (should (equal (mote--probe-table 'mote-strike-through
+                                       '((:strike-through t)) nil)
+                    (concat "[faces.mote-strike-through]\n"
+                            "foreground = \"unspecified\"\n"
+                            "background = \"unspecified\"\n"
+                            "weight = \"unspecified\"\n"
+                            "slant = \"unspecified\"\n"
+                            "underline = \"unspecified\"\n"
+                            "strike-through = true\n"
+                            "inherit = []\n"))))))
+
+(ert-deftest mote-test-probe-faces-in-plain-org ()
+  "Plain Org merges each probe over the heading it sits in."
+  (let* ((org-mode-hook nil)
+         (drawn (mote--probe-faces)))
+    (dolist (case '((org-todo org-todo org-level-1)
+                    (org-done org-done org-level-1)
+                    (org-headline-done org-headline-done org-level-1)
+                    (org-tag org-tag org-level-1)
+                    (org-checkbox org-checkbox)
+                    (mote-checkbox-done org-checkbox)
+                    (org-document-title org-document-title)
+                    (org-document-info org-document-info)
+                    (org-document-info-keyword org-document-info-keyword)
+                    (mote-strike-through (:strike-through t))))
+      (should (equal (cons (car case)
+                           (mote--face-list (alist-get (car case) drawn)))
+                     case)))))
+
+(ert-deftest mote-test-probe-faces-follow-a-package-that-draws-over ()
+  "A hook that draws a keyword over the heading shows in the probe.
+The hook stands in for packages such as org-modern."
+  (let ((org-mode-hook
+         (list (lambda ()
+                 (font-lock-add-keywords
+                  nil '(("^\\*+ \\(TODO\\)\\b" 1 '(:background "#123456") t))
+                  'append)))))
+    (should (equal (mote--face-list (alist-get 'org-todo (mote--probe-faces)))
+                   '((:background "#123456"))))))
+
+(ert-deftest mote-test-probe-headline-done-off ()
+  "With `org-fontify-done-headline' off the done headline is the heading's.
+Every attribute is then left to the heading, as Emacs leaves it."
+  (let ((org-mode-hook nil)
+        (org-fontify-done-headline nil))
+    (mote-test--with-faces
+     mote-test--export-default
+     (lambda ()
+       (let ((drawn (alist-get 'org-headline-done (mote--probe-faces))))
+         (should (equal (mote--face-list drawn) '(org-level-1)))
+         (should (equal (mote--probe-table 'org-headline-done drawn
+                                           '(org-level-1))
+                        (concat "[faces.org-headline-done]\n"
+                                "foreground = \"unspecified\"\n"
+                                "background = \"unspecified\"\n"
+                                "weight = \"unspecified\"\n"
+                                "slant = \"unspecified\"\n"
+                                "underline = \"unspecified\"\n"
+                                "strike-through = \"unspecified\"\n"
+                                "inherit = []\n"))))))))
+
+(ert-deftest mote-test-probe-failure-falls-back-to-names ()
+  "When Org fails the probe faces are read by name, and a message says so.
+The faces only the app has are left out."
+  (let ((org-mode-hook (list (lambda () (error "Boom"))))
+        (messages nil))
+    (cl-letf (((symbol-function 'message)
+               (lambda (fmt &rest args)
+                 (push (apply #'format fmt args) messages))))
+      (mote-test--with-faces
+       mote-test--export-default
+       (lambda ()
+         (let ((tables (mote--probe-tables)))
+           (should (member "mote: org probe failed (Boom); exported org faces by name"
+                           messages))
+           (should (seq-find (lambda (table)
+                               (string-prefix-p "[faces.org-todo]\n" table))
+                             tables))
+           (should-not (seq-find (lambda (table)
+                                   (string-prefix-p "[faces.mote-" table))
+                                 tables))))))))
+
+(ert-deftest mote-test-theme-toml-appends-probes ()
+  "The probe faces follow the faces read by name."
+  (let ((mote-export-faces '(default))
+        (org-mode-hook nil))
+    (mote-test--with-faces
+     mote-test--export-default
+     (lambda ()
+       (let ((text (mote--theme-toml "x" "X" 'dark)))
+         (should (< (string-match "^\\[faces\\.default\\]$" text)
+                    (string-match "^\\[faces\\.org-todo\\]$" text)))
+         (should (string-match-p "^\\[faces\\.mote-strike-through\\]$" text))
+         (should (string-match-p "^\\[faces\\.mote-checkbox-done\\]$" text)))))))
 
 (provide 'mote-test)
 ;;; mote-test.el ends here

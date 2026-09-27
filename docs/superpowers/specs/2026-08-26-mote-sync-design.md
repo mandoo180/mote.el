@@ -37,7 +37,10 @@
 동기화의 공개 함수는 `mote-sync` **하나뿐**이다. 그 외 동기화의 모든 함수·변수는
 `mote--` 접두사를 가지는 내부 심볼이다. 0.2.0이 동기화와 별개로 테마 내보내기 명령
 `mote-export-theme`과 그 face 목록 상수 `mote-export-faces`를 더했다(Mote 앱 저장소의
-`docs/superpowers/specs/2026-09-27-mote-p19-theme-faces-design.md` §7).
+`docs/superpowers/specs/2026-09-27-mote-p19-theme-faces-design.md` §7). 0.3.0이 탐침 상수
+`mote-export-probe-text`·`mote-export-probes`를 더했다 — org 구문의 모양을 face 이름 대신 실제로
+칠한 결과에서 읽는다(앱 저장소의 `docs/superpowers/specs/2026-09-27-mote-p20-face-fidelity-design.md`
+§5).
 
 | 변수 | 타입 | 기본값 | 역할 |
 |---|---|---|---|
