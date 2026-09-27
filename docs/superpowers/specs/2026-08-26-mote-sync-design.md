@@ -34,8 +34,10 @@
 
 ### 2.1 공개 심볼
 
-공개 함수는 `mote-sync` **하나뿐**이다. 그 외 모든 함수·변수는 `mote--` 접두사를
-가지는 내부 심볼이다.
+동기화의 공개 함수는 `mote-sync` **하나뿐**이다. 그 외 동기화의 모든 함수·변수는
+`mote--` 접두사를 가지는 내부 심볼이다. 0.2.0이 동기화와 별개로 테마 내보내기 명령
+`mote-export-theme`과 그 face 목록 상수 `mote-export-faces`를 더했다(Mote 앱 저장소의
+`docs/superpowers/specs/2026-09-27-mote-p19-theme-faces-design.md` §7).
 
 | 변수 | 타입 | 기본값 | 역할 |
 |---|---|---|---|

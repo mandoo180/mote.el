@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026
 
 ;; Author: Kyeongsoo Choi <mandoo180@gmail.com>
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: convenience, files, vc
 ;; URL: https://github.com/mandoo180/mote.el
@@ -35,6 +35,10 @@
 ;; all repaired on the next run.  mote never runs `git reset --hard',
 ;; `git clean' or a forced push, so every automatic decision stays in the
 ;; history and can be reverted.
+;;
+;; `mote-export-theme' writes the faces of the selected frame to a theme
+;; file inside the notes directory, so the Mote phone app can show the
+;; same colours once `mote-sync' has carried the file over.
 
 ;;; Code:
 
@@ -862,6 +866,194 @@ by the next call."
   (if mote--session
       (message "mote: sync already in progress")
     (mote--sync-1 mote-root nil)))
+
+;;;; Theme export
+
+;; The source of this list is section 2.3 of the Mote app's design
+;; document for themes and faces,
+;; docs/superpowers/specs/2026-09-27-mote-p19-theme-faces-design.md in the
+;; app repository.  It is a contract between the two repositories: the
+;; order follows the app's face groups, and the faces the app names with
+;; a `mote-' prefix are left out because Emacs has no such face.  A face
+;; the app does not know is ignored there with a warning, so a stale copy
+;; loses colours rather than breaking the phone.
+(defconst mote-export-faces
+  '(default cursor region highlight shadow bold italic link
+    font-lock-comment-face font-lock-string-face
+    font-lock-keyword-face font-lock-number-face
+    outline-1 outline-2 outline-3 outline-4
+    outline-5 outline-6 outline-7 outline-8
+    org-level-1 org-level-2 org-level-3 org-level-4
+    org-level-5 org-level-6 org-level-7 org-level-8
+    org-todo org-done org-tag org-link org-code org-verbatim org-block
+    org-meta-line org-block-begin-line org-block-end-line org-checkbox
+    markdown-header-face-1 markdown-header-face-2 markdown-header-face-3
+    markdown-header-face-4 markdown-header-face-5 markdown-header-face-6
+    markdown-bold-face markdown-italic-face markdown-code-face
+    markdown-inline-code-face markdown-markup-face markdown-link-face
+    markdown-gfm-checkbox-face
+    mode-line minibuffer-prompt lazy-highlight)
+  "Faces `mote-export-theme' writes, in the order the Mote app lists them.")
+
+(defun mote--theme-id-default (theme)
+  "Return the theme id `mote-export-theme' offers for THEME.
+THEME is a theme symbol, normally the first of `custom-enabled-themes',
+or nil when no theme is enabled.  The app accepts only ids made of
+lower-case letters, digits and hyphens, so everything else becomes a
+hyphen."
+  (if theme
+      (replace-regexp-in-string "[^a-z0-9-]" "-"
+                                (downcase (symbol-name theme)))
+    "emacs"))
+
+(defun mote--valid-theme-id-p (id)
+  "Return non-nil when ID is a theme id the Mote app accepts."
+  ;; Without this binding the default `case-fold-search' lets [a-z] match
+  ;; upper-case letters, and the app would skip the file.
+  (let ((case-fold-search nil))
+    (string-match-p "\\`[a-z0-9-]+\\'" id)))
+
+(defun mote--toml-string (string)
+  "Return STRING as a TOML basic string, quotes included."
+  (concat "\"" (replace-regexp-in-string "[\"\\]" "\\\\\\&" string) "\""))
+
+(defun mote--color-hex (color)
+  "Return COLOR as an upper-case \"#RRGGBB\" string, or nil.
+COLOR is a face colour value: a colour name, an RGB spec such as
+\"#483d8b\", or something that names no colour, such as the
+\"unspecified-fg\" of a terminal frame."
+  (when (stringp color)
+    ;; `color-values' asks the display, and a terminal display answers
+    ;; with the nearest colour it can show: in batch Emacs even
+    ;; "#483D8B" comes back as pure blue.  The standard definition does
+    ;; not depend on the display, so it goes first; `color-values' is
+    ;; left for names only the display knows.
+    (let ((rgb (or (tty-color-standard-values (tty-color-canonicalize color))
+                   (color-values color))))
+      (when rgb
+        (apply #'format "#%02X%02X%02X"
+               (mapcar (lambda (value) (round value 257.0)) rgb))))))
+
+(defun mote--weight-bold-p (weight)
+  "Return non-nil when WEIGHT is semi-bold or heavier.
+Emacs keeps a weight as it was written, so `semibold' and `semi-bold'
+both occur.  Ranking by the numbers of `font-weight-table', whose
+entries are vectors of a number followed by the symbols sharing it,
+covers every alias."
+  (let* ((rank (lambda (symbol)
+                 (seq-some (lambda (entry)
+                             (and (memq symbol (cdr (append entry nil)))
+                                  (aref entry 0)))
+                           font-weight-table)))
+         (have (funcall rank weight)))
+    (and have (>= have (funcall rank 'semi-bold)))))
+
+(defun mote--face-value (face attribute)
+  "Return FACE's ATTRIBUTE as a TOML value, or nil to leave it out.
+The value is read with inheritance followed, because Emacs themes
+inherit through faces the app does not know; only the final values
+travel."
+  (let ((value (face-attribute face attribute nil t)))
+    ;; `reset' (Emacs 29) stands for the default face's value and is
+    ;; returned as is, even with inheritance followed.
+    (when (eq value 'reset)
+      (setq value (face-attribute 'default attribute nil t)))
+    (pcase attribute
+      ;; Always written, off included: the app underlines some faces by
+      ;; default (link, for one), so leaving out an Emacs face that shows
+      ;; no line would draw one on the phone.  Colours and styles of the
+      ;; lines have no counterpart in the app.
+      ((or :underline :strike-through)
+       (if (memq value '(nil unspecified)) "false" "true"))
+      ((guard (memq value '(nil unspecified))) nil)
+      ((or :foreground :background)
+       (let ((hex (mote--color-hex value)))
+         (and hex (mote--toml-string hex))))
+      (:weight
+       (if (mote--weight-bold-p value) "\"bold\"" "\"normal\""))
+      (:slant
+       ;; Every slant but upright is drawn slanted, the reverse ones
+       ;; included, as the app reads them (section 2.1 of its design).
+       (if (memq value '(normal r)) "\"normal\"" "\"italic\"")))))
+
+(defun mote--face-toml (face)
+  "Return the TOML table for FACE, or nil when it has nothing to write.
+Only the cursor face can come out empty, when its background is not a
+colour: every other face carries at least its underline and
+strike-through."
+  (let ((lines nil))
+    (pcase-dolist (`(,attribute . ,key)
+                   (if (eq face 'cursor)
+                       ;; The app reads only the cursor's background: it is
+                       ;; the caret colour, as in Emacs.
+                       '((:background . "background"))
+                     '((:foreground . "foreground")
+                       (:background . "background")
+                       (:weight . "weight")
+                       (:slant . "slant")
+                       (:underline . "underline")
+                       (:strike-through . "strike-through"))))
+      (let ((value (mote--face-value face attribute)))
+        (when value (push (concat key " = " value) lines))))
+    (when lines
+      (concat (format "[faces.%s]\n" face)
+              (string-join (nreverse lines) "\n")
+              "\n"))))
+
+(defun mote--theme-toml (id name kind)
+  "Return a Mote theme file describing the faces of the selected frame.
+ID is the theme id the file will be saved under, NAME the name shown on
+the phone, and KIND the frame's `background-mode': `light' gives a light
+theme, anything else a dark one.  Faces in `mote-export-faces' that are
+not defined here are left out; the app fills them in."
+  (let ((tables (delq nil (mapcar (lambda (face)
+                                    (and (facep face) (mote--face-toml face)))
+                                  mote-export-faces))))
+    (concat
+     "# Exported from Emacs by mote-export-theme.  On the phone: load-theme "
+     id "\n"
+     "[theme]\n"
+     "name = " (mote--toml-string name) "\n"
+     "kind = " (if (eq kind 'light) "\"light\"" "\"dark\"") "\n"
+     (mapconcat (lambda (table) (concat "\n" table)) tables ""))))
+
+;;;###autoload
+(defun mote-export-theme (id)
+  "Write the faces of the selected frame to a Mote theme file named ID.
+The file is .mote/themes/ID.toml under `mote-root'.  Run `mote-sync'
+afterwards to carry it to the phone, and pick ID there as the theme to
+load.  Interactively, ID defaults to the first enabled theme's name,
+made safe for the app.  An existing file is overwritten only after
+confirmation."
+  (interactive
+   (let ((default (mote--theme-id-default (car custom-enabled-themes))))
+     (list (read-string (format-prompt "Export theme as" default)
+                        nil nil default))))
+  (unless (mote--valid-theme-id-p id)
+    (user-error "Theme id must be lower-case letters, digits and hyphens: %s"
+                id))
+  (let* ((file (expand-file-name (concat ".mote/themes/" id ".toml")
+                                 mote-root))
+         (theme (car custom-enabled-themes))
+         (toml (mote--theme-toml id
+                                 (if theme (symbol-name theme) "Emacs default")
+                                 (frame-parameter nil 'background-mode))))
+    (if (and (file-exists-p file)
+             (not (y-or-n-p (format "%s exists; overwrite? "
+                                    (abbreviate-file-name file)))))
+        (message "mote: theme not exported")
+      (make-directory (file-name-directory file) t)
+      ;; TOML is UTF-8; the default coding system follows the locale.
+      (let ((coding-system-for-write 'utf-8-unix))
+        (with-temp-file file (insert toml)))
+      (message "mote: exported %s -- run M-x mote-sync to send it to the phone%s"
+               (abbreviate-file-name file)
+               ;; Themes choose other colours for a terminal, often only
+               ;; approximations of the graphical ones.  The file is still
+               ;; written: approximate colours beat none.
+               (if (display-graphic-p)
+                   ""
+                 " (terminal frame: colours may be approximate)")))))
 
 (provide 'mote)
 ;;; mote.el ends here

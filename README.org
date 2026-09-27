@@ -25,7 +25,7 @@ it got wrong can be reverted.
 
 * Use
 
-~M-x mote-sync~.  That is the whole interface.
+~M-x mote-sync~.  That is the whole sync interface.
 
 The first run turns ~mote-root~ into a git repository, seeds a
 ~.gitignore~ and connects ~mote-remote~.  Later runs commit, merge and
@@ -57,6 +57,34 @@ push the remote rejected.  A network failure keeps the local commit and
 gives up quietly.
 
 ~mote~ never runs ~git reset --hard~, ~git clean~ or a forced push.
+
+* Theme export
+
+~M-x mote-export-theme~ writes the faces of the selected frame to a
+theme file for the Mote phone app, ~.mote/themes/ID.toml~ under
+~mote-root~.  It asks for the id, offering the first enabled theme's
+name lower-cased with every character other than a letter, digit or
+hyphen turned into a hyphen (~emacs~ when no theme is enabled), and
+asks again before overwriting an existing file.
+
+Then run ~M-x mote-sync~, sync on the phone and pick the theme there
+with the app's ~load-theme~ command.  The app keeps one theme for light
+mode and one for dark; the file's ~kind~ follows this frame's
+background mode and decides which of the two ~load-theme~ sets.
+
+The file holds final values only.  Emacs faces inherit through faces
+the app does not know, so ~mote-export-theme~ follows inheritance here
+and writes what it resolves to.  Colours become ~#RRGGBB~, weights fold
+to bold or normal, slants to italic or normal, and underline and
+strike-through are always written as on or off, without colour or
+style -- off too, so a face the app would underline stays plain on the
+phone when it is plain here.  Faces of packages this Emacs has not
+loaded yet (open an Org or Markdown file first) are left out, and the
+app fills them from its own defaults.
+
+Export from a graphical frame.  A terminal frame still writes the
+file, but themes pick terminal colours there, which may only
+approximate the graphical ones.
 
 * Options
 

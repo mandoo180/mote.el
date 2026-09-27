@@ -201,8 +201,8 @@
         (should (equal (string-trim (cdr (mote-fixture-git a "rev-parse" "HEAD")))
                        head))))))
 
-(ert-deftest mote-test-only-one-public-command ()
-  "`mote-sync' is the only interactive command in the package."
+(ert-deftest mote-test-public-commands ()
+  "`mote-sync' and `mote-export-theme' are the package's only commands."
   (let ((commands nil))
     (mapatoms (lambda (sym)
                 (when (and (string-prefix-p "mote-" (symbol-name sym))
@@ -211,7 +211,7 @@
                            (not (string-prefix-p "mote-test" (symbol-name sym)))
                            (commandp sym))
                   (push sym commands))))
-    (should (equal commands '(mote-sync)))))
+    (should (equal (sort commands #'string<) '(mote-export-theme mote-sync)))))
 
 (ert-deftest mote-test-sync-refuses-to-reenter ()
   "A second `mote-sync' while one is in flight is a no-op."
@@ -1059,6 +1059,450 @@ would otherwise abort a healthy run over an incidental warning."
                  "main"))
   (should (equal (mote--last-line "  main  \n\n") "main"))
   (should (equal (mote--last-line "") "")))
+
+;;;; Theme export
+
+(defface mote-test-export-parent '((t))
+  "Fixture face for the theme export tests."
+  :group 'mote)
+
+(defface mote-test-export-other '((t))
+  "Fixture face for the theme export tests."
+  :group 'mote)
+
+(defface mote-test-export-child '((t))
+  "Fixture face for the theme export tests."
+  :group 'mote)
+
+(defface mote-test-export-blank '((t))
+  "Fixture face that stays without attributes."
+  :group 'mote)
+
+(defun mote-test--with-faces (settings thunk)
+  "Apply SETTINGS on the selected frame, call THUNK, then undo them.
+SETTINGS is a list of (FACE ATTRIBUTE VALUE).  Faces are global state,
+so every attribute a test touches is put back, last change first."
+  (let ((frame (selected-frame))
+        (saved nil))
+    (unwind-protect
+        (progn
+          (dolist (setting settings)
+            (pcase-let ((`(,face ,attribute ,value) setting))
+              (push (list face attribute (face-attribute face attribute frame))
+                    saved)
+              (set-face-attribute face frame attribute value)))
+          (funcall thunk))
+      (dolist (entry saved)
+        (set-face-attribute (nth 0 entry) frame (nth 1 entry) (nth 2 entry))))))
+
+(ert-deftest mote-test-export-faces-follow-the-app ()
+  "The exported faces are the app's list without its `mote-' faces.
+The list is shared with the Mote app, so a face added or dropped here
+by accident silently changes what reaches the phone."
+  (should (= (length mote-export-faces) 55))
+  (should (equal (length (delete-dups (copy-sequence mote-export-faces))) 55))
+  (should-not (seq-find (lambda (face)
+                          (string-prefix-p "mote-" (symbol-name face)))
+                        mote-export-faces))
+  (should (eq (car mote-export-faces) 'default))
+  (should (eq (car (last mote-export-faces)) 'lazy-highlight)))
+
+(ert-deftest mote-test-theme-id-default ()
+  "The offered id is the enabled theme's name in the app's alphabet."
+  (should (equal (mote--theme-id-default nil) "emacs"))
+  (should (equal (mote--theme-id-default 'modus-vivendi) "modus-vivendi"))
+  (should (equal (mote--theme-id-default 'tango-2) "tango-2"))
+  (should (equal (mote--theme-id-default 'Solarized_Dark+) "solarized-dark-")))
+
+(ert-deftest mote-test-theme-id-validation-ignores-case-folding ()
+  "Upper-case ids are refused even though `case-fold-search' is on.
+The app skips a theme file whose name breaks its id rule, so letting
+one through would export a theme the phone never shows."
+  (should case-fold-search)
+  (should (mote--valid-theme-id-p "doom-one"))
+  (should (mote--valid-theme-id-p "tango-2"))
+  (should-not (mote--valid-theme-id-p "Solarized"))
+  (should-not (mote--valid-theme-id-p "my theme"))
+  (should-not (mote--valid-theme-id-p "dark.toml"))
+  (should-not (mote--valid-theme-id-p "")))
+
+(ert-deftest mote-test-color-hex-ignores-the-display ()
+  "Specs and colour names convert without asking the display.
+A terminal display, batch Emacs included, answers `color-values' with
+the nearest colour it can show; the stub reproduces that."
+  (cl-letf (((symbol-function 'color-values)
+             (lambda (&rest _) '(0 0 65535))))
+    (should (equal (mote--color-hex "#483D8B") "#483D8B"))
+    (should (equal (mote--color-hex "#483d8b") "#483D8B"))
+    (should (equal (mote--color-hex "#123") "#112233"))
+    (should (equal (mote--color-hex "rgb:48/3d/8b") "#483D8B"))
+    (should (equal (mote--color-hex "dark slate blue") "#483D8B"))
+    (should (equal (mote--color-hex "DarkSlateBlue") "#483D8B"))
+    (should (equal (mote--color-hex "grey50") "#7F7F7F"))))
+
+(ert-deftest mote-test-color-hex-asks-the-display-last ()
+  "A name only the display knows goes to `color-values'."
+  (cl-letf (((symbol-function 'color-values)
+             (lambda (color &rest _)
+               (pcase color
+                 ("display-only-color" '(65535 0 0))
+                 ;; A display may report 16-bit values that are not exact
+                 ;; multiples of 257; the nearest 8-bit value wins.
+                 ("display-rounding" '(18503 32896 128))))))
+    (should (equal (mote--color-hex "display-only-color") "#FF0000"))
+    (should (equal (mote--color-hex "display-rounding") "#488000"))
+    (should-not (mote--color-hex "unspecified-fg"))
+    (should-not (mote--color-hex 'reset))))
+
+(ert-deftest mote-test-theme-export-resolves-inheritance ()
+  "A face that only inherits is written with the values it inherits.
+The app cannot follow Emacs inheritance through faces it does not know,
+so the exported file carries resolved values and no `inherit' key."
+  (mote-test--with-faces
+   '((mote-test-export-parent :foreground "#AA0000")
+     (mote-test-export-parent :weight bold)
+     (mote-test-export-other :foreground "#00BB00")
+     (mote-test-export-child :inherit mote-test-export-parent))
+   (lambda ()
+     (should (equal (mote--face-toml 'mote-test-export-child)
+                    (concat "[faces.mote-test-export-child]\n"
+                            "foreground = \"#AA0000\"\n"
+                            "weight = \"bold\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n")))
+     ;; With a list, the first face that has a value wins, as in Emacs.
+     (set-face-attribute 'mote-test-export-child (selected-frame)
+                         :inherit '(mote-test-export-other
+                                    mote-test-export-parent))
+     (should (equal (mote--face-toml 'mote-test-export-child)
+                    (concat "[faces.mote-test-export-child]\n"
+                            "foreground = \"#00BB00\"\n"
+                            "weight = \"bold\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n"))))))
+
+(ert-deftest mote-test-theme-export-leaves-out-unspecified ()
+  "Unspecified colours, weight and slant are not written.
+The app fills them from its own defaults.  Underline and strike-through
+are always written, so a face with nothing set still gets a table."
+  (mote-test--with-faces
+   '((mote-test-export-parent :slant italic))
+   (lambda ()
+     (should (equal (mote--face-toml 'mote-test-export-parent)
+                    (concat "[faces.mote-test-export-parent]\n"
+                            "slant = \"italic\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n")))
+     (should (equal (mote--face-toml 'mote-test-export-blank)
+                    (concat "[faces.mote-test-export-blank]\n"
+                            "underline = false\n"
+                            "strike-through = false\n"))))))
+
+(ert-deftest mote-test-theme-export-converts-colour-names ()
+  "X11 colour names are written as hex, which is all the app reads."
+  (mote-test--with-faces
+   '((mote-test-export-parent :foreground "dark slate blue")
+     (mote-test-export-parent :background "LightGoldenrod2"))
+   (lambda ()
+     (should (equal (mote--face-toml 'mote-test-export-parent)
+                    (concat "[faces.mote-test-export-parent]\n"
+                            "foreground = \"#483D8B\"\n"
+                            "background = \"#EEDC82\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n"))))))
+
+(ert-deftest mote-test-theme-export-folds-weight ()
+  "Semi-bold and heavier become bold, everything lighter normal.
+Emacs keeps a weight as it was written, so both spellings of
+semi-bold reach the exporter."
+  (dolist (case '((thin . "\"normal\"") (light . "\"normal\"")
+                  (semi-light . "\"normal\"") (book . "\"normal\"")
+                  (normal . "\"normal\"") (medium . "\"normal\"")
+                  (semi-bold . "\"bold\"") (semibold . "\"bold\"")
+                  (demibold . "\"bold\"") (bold . "\"bold\"")
+                  (extra-bold . "\"bold\"") (ultra-bold . "\"bold\"")
+                  (heavy . "\"bold\"") (black . "\"bold\"")
+                  (ultra-heavy . "\"bold\"")))
+    (mote-test--with-faces
+     `((mote-test-export-parent :weight ,(car case)))
+     (lambda ()
+       (should (equal (cons (car case)
+                            (mote--face-value 'mote-test-export-parent :weight))
+                      case))))))
+
+(ert-deftest mote-test-theme-export-folds-slant ()
+  "Every slant but normal becomes italic.
+The app draws the reverse slants slanted too, so they are italic here."
+  (dolist (case '((italic . "\"italic\"") (oblique . "\"italic\"")
+                  (reverse-italic . "\"italic\"")
+                  (reverse-oblique . "\"italic\"")
+                  (normal . "\"normal\"") (r . "\"normal\"")))
+    (mote-test--with-faces
+     `((mote-test-export-parent :slant ,(car case)))
+     (lambda ()
+       (should (equal (cons (car case)
+                            (mote--face-value 'mote-test-export-parent :slant))
+                      case))))))
+
+(ert-deftest mote-test-theme-export-lines-are-flags ()
+  "Underline and strike-through are always written, as on or off.
+Their colours and styles have no counterpart in the app.  Off is
+written too: the app underlines `link' by default, so a theme that
+turns the line off in Emacs must turn it off on the phone as well."
+  (mote-test--with-faces
+   '((mote-test-export-parent :underline (:color "red" :style wave))
+     (mote-test-export-parent :strike-through "red")
+     (mote-test-export-other :underline t)
+     (mote-test-export-child :inherit mote-test-export-other)
+     (mote-test-export-child :underline nil))
+   (lambda ()
+     (should (equal (mote--face-toml 'mote-test-export-parent)
+                    (concat "[faces.mote-test-export-parent]\n"
+                            "underline = true\n"
+                            "strike-through = true\n")))
+     (should (equal (mote--face-value 'mote-test-export-other :underline)
+                    "true"))
+     ;; An explicit nil beats the inherited line, as it does in Emacs.
+     (should (equal (mote--face-value 'mote-test-export-child :underline)
+                    "false"))
+     (should (equal (mote--face-value 'mote-test-export-blank :underline)
+                    "false"))
+     (should (equal (mote--face-value 'mote-test-export-blank :strike-through)
+                    "false")))))
+
+(ert-deftest mote-test-theme-export-reset-means-default ()
+  "An attribute set to `reset' takes the default face's value."
+  (skip-unless (>= emacs-major-version 29))
+  (mote-test--with-faces
+   '((default :foreground "#112233")
+     (mote-test-export-parent :underline t)
+     (mote-test-export-child :inherit mote-test-export-parent)
+     (mote-test-export-child :foreground reset)
+     (mote-test-export-child :underline reset))
+   (lambda ()
+     (should (equal (face-attribute 'default :underline) nil))
+     (should (equal (mote--face-toml 'mote-test-export-child)
+                    (concat "[faces.mote-test-export-child]\n"
+                            "foreground = \"#112233\"\n"
+                            "underline = false\n"
+                            "strike-through = false\n"))))))
+
+(ert-deftest mote-test-theme-export-cursor-is-background-only ()
+  "The cursor face contributes only its background, the caret colour.
+Without a background it is the one face that writes no table at all."
+  (mote-test--with-faces
+   '((cursor :foreground "#00FF00")
+     (cursor :background "#FF0000")
+     (cursor :weight bold)
+     (cursor :underline t))
+   (lambda ()
+     (should (equal (mote--face-toml 'cursor)
+                    "[faces.cursor]\nbackground = \"#FF0000\"\n"))
+     (set-face-attribute 'cursor (selected-frame) :background 'unspecified)
+     (should-not (mote--face-toml 'cursor)))))
+
+(ert-deftest mote-test-theme-toml-document ()
+  "The whole file: header, theme table, then defined faces in order.
+A face this Emacs does not define, such as markdown-mode's when the
+package is not loaded, is left for the app to fill in.  A defined face
+with nothing set still states its underline and strike-through."
+  (let ((mote-export-faces '(default cursor mote-test-export-undefined
+                              mote-test-export-blank mote-test-export-parent
+                              mote-test-export-child)))
+    (should-not (facep 'mote-test-export-undefined))
+    (mote-test--with-faces
+     '((default :foreground "#112233")
+       (default :background "#FAFAFA")
+       (default :weight normal)
+       (default :slant normal)
+       (default :underline nil)
+       (default :strike-through nil)
+       (cursor :background "#FF0000")
+       (mote-test-export-parent :foreground "dark slate blue")
+       (mote-test-export-parent :weight semibold)
+       (mote-test-export-child :inherit mote-test-export-parent)
+       (mote-test-export-child :slant oblique))
+     (lambda ()
+       (should (equal (mote--theme-toml "fixture" "Fixture" 'light)
+                      (concat
+                       "# Exported from Emacs by mote-export-theme."
+                       "  On the phone: load-theme fixture\n"
+                       "[theme]\n"
+                       "name = \"Fixture\"\n"
+                       "kind = \"light\"\n"
+                       "\n"
+                       "[faces.default]\n"
+                       "foreground = \"#112233\"\n"
+                       "background = \"#FAFAFA\"\n"
+                       "weight = \"normal\"\n"
+                       "slant = \"normal\"\n"
+                       "underline = false\n"
+                       "strike-through = false\n"
+                       "\n"
+                       "[faces.cursor]\n"
+                       "background = \"#FF0000\"\n"
+                       "\n"
+                       "[faces.mote-test-export-blank]\n"
+                       "underline = false\n"
+                       "strike-through = false\n"
+                       "\n"
+                       "[faces.mote-test-export-parent]\n"
+                       "foreground = \"#483D8B\"\n"
+                       "weight = \"bold\"\n"
+                       "underline = false\n"
+                       "strike-through = false\n"
+                       "\n"
+                       "[faces.mote-test-export-child]\n"
+                       "foreground = \"#483D8B\"\n"
+                       "weight = \"bold\"\n"
+                       "slant = \"italic\"\n"
+                       "underline = false\n"
+                       "strike-through = false\n")))))))
+
+(ert-deftest mote-test-theme-toml-kind-and-name ()
+  "Only a light background makes a light theme, and the name is escaped."
+  (let ((mote-export-faces nil))
+    (should (string-match-p "^kind = \"dark\"$"
+                            (mote--theme-toml "x" "X" 'dark)))
+    (should (string-match-p "^kind = \"dark\"$"
+                            (mote--theme-toml "x" "X" nil)))
+    (should (string-match-p
+             (regexp-quote "name = \"Tom's \\\"best\\\" \\\\ theme\"\n")
+             (mote--theme-toml "x" "Tom's \"best\" \\ theme" 'dark)))))
+
+(defun mote-test--export (id &rest bindings)
+  "Run `mote-export-theme' with ID into a fresh `mote-root'.
+BINDINGS is a plist: :themes binds `custom-enabled-themes', :answer is
+what `y-or-n-p' returns, :graphic what `display-graphic-p' returns and
+:existing, when non-nil, is written to the target file first.  Return a
+plist of :file, :text (nil when no file), :messages and :asked."
+  (let* ((root (make-temp-file "mote-theme-" t))
+         (mote-root root)
+         (custom-enabled-themes (plist-get bindings :themes))
+         (file (expand-file-name (concat ".mote/themes/" id ".toml") root))
+         (messages nil)
+         (asked nil))
+    (unwind-protect
+        (progn
+          (when (plist-get bindings :existing)
+            (mote-fixture-write root (concat ".mote/themes/" id ".toml")
+                                (plist-get bindings :existing)))
+          (cl-letf (((symbol-function 'message)
+                     (lambda (fmt &rest args)
+                       (push (apply #'format fmt args) messages)))
+                    ((symbol-function 'y-or-n-p)
+                     (lambda (prompt)
+                       (push prompt asked)
+                       (plist-get bindings :answer)))
+                    ((symbol-function 'display-graphic-p)
+                     (lambda (&rest _) (plist-get bindings :graphic))))
+            (mote-export-theme id))
+          (list :file file
+                :text (mote-fixture-read root (concat ".mote/themes/" id ".toml"))
+                :messages (nreverse messages)
+                :asked (nreverse asked)))
+      (delete-directory root t))))
+
+(ert-deftest mote-test-export-theme-writes-the-file ()
+  "The command writes what `mote--theme-toml' renders and says what next."
+  (let ((mote-export-faces '(mote-test-export-parent)))
+    (mote-test--with-faces
+     '((mote-test-export-parent :foreground "#AA0000"))
+     (lambda ()
+       (let ((result (mote-test--export "fixture" :themes '(Fixture_Theme)
+                                        :graphic t)))
+         (should (equal (plist-get result :text)
+                        (mote--theme-toml "fixture" "Fixture_Theme"
+                                          (frame-parameter nil 'background-mode))))
+         (should (equal (plist-get result :asked) nil))
+         (should (equal (plist-get result :messages)
+                        (list (format "mote: exported %s -- run M-x mote-sync to send it to the phone"
+                                      (abbreviate-file-name
+                                       (plist-get result :file)))))))
+       (let ((result (mote-test--export "fixture" :themes nil :graphic t)))
+         (should (string-match-p "^name = \"Emacs default\"$"
+                                 (plist-get result :text))))))))
+
+(ert-deftest mote-test-export-theme-warns-on-a-terminal ()
+  "A terminal frame still exports, with a warning about its colours."
+  (let* ((mote-export-faces nil)
+         (result (mote-test--export "fixture" :graphic nil)))
+    (should (plist-get result :text))
+    (should (equal (plist-get result :messages)
+                   (list (format "mote: exported %s -- run M-x mote-sync to send it to the phone (terminal frame: colours may be approximate)"
+                                 (abbreviate-file-name
+                                  (plist-get result :file))))))))
+
+(ert-deftest mote-test-export-theme-asks-before-overwriting ()
+  "An existing theme file is replaced only when the user agrees."
+  (let ((mote-export-faces nil))
+    (let ((kept (mote-test--export "fixture" :existing "old\n" :answer nil
+                                   :graphic t)))
+      (should (equal (plist-get kept :text) "old\n"))
+      (should (= (length (plist-get kept :asked)) 1))
+      (should (string-suffix-p "fixture.toml exists; overwrite? "
+                               (car (plist-get kept :asked))))
+      (should (equal (plist-get kept :messages) '("mote: theme not exported"))))
+    (let ((replaced (mote-test--export "fixture" :existing "old\n" :answer t
+                                       :graphic t)))
+      (should (string-prefix-p "# Exported" (plist-get replaced :text))))))
+
+(ert-deftest mote-test-export-theme-rejects-bad-ids ()
+  "An id the app would skip is refused before anything is written."
+  (let* ((root (make-temp-file "mote-theme-" t))
+         (mote-root root))
+    (unwind-protect
+        (progn
+          (should-error (mote-export-theme "My Theme") :type 'user-error)
+          (should-error (mote-export-theme "Solarized") :type 'user-error)
+          (should-not (file-exists-p (expand-file-name ".mote" root))))
+      (delete-directory root t))))
+
+(ert-deftest mote-test-export-theme-writes-utf-8 ()
+  "The file is UTF-8 with LF line ends whatever the user's defaults say.
+The app reads TOML, which is UTF-8, and a theme name can be non-ASCII."
+  (let ((mote-export-faces nil)
+        (default-coding (default-value 'buffer-file-coding-system)))
+    (unwind-protect
+        (progn
+          (setq-default buffer-file-coding-system 'iso-latin-1-dos)
+          (let* ((root (make-temp-file "mote-theme-" t))
+                 (mote-root root)
+                 (custom-enabled-themes (list (intern "café-dark"))))
+            (unwind-protect
+                (progn
+                  (cl-letf (((symbol-function 'message) #'ignore))
+                    (mote-export-theme "cafe-dark"))
+                  (let ((raw (with-temp-buffer
+                               (set-buffer-multibyte nil)
+                               (insert-file-contents-literally
+                                (expand-file-name ".mote/themes/cafe-dark.toml"
+                                                  root))
+                               (buffer-string))))
+                    (should (string-match-p "name = \"caf\303\251-dark\"\n" raw))
+                    (should-not (string-match-p "\r" raw))))
+              (delete-directory root t))))
+      (setq-default buffer-file-coding-system default-coding))))
+
+(ert-deftest mote-test-export-theme-offers-the-enabled-theme ()
+  "Interactively the id defaults to the first enabled theme's name."
+  (let* ((mote-export-faces nil)
+         (root (make-temp-file "mote-theme-" t))
+         (mote-root root)
+         (custom-enabled-themes '(Modus_Vivendi tango))
+         (prompt nil))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'read-string)
+                     (lambda (p &optional _initial _history default &rest _)
+                       (setq prompt p)
+                       default))
+                    ((symbol-function 'message) #'ignore))
+            (call-interactively #'mote-export-theme))
+          (should (equal prompt "Export theme as (default modus-vivendi): "))
+          (should (file-exists-p
+                   (expand-file-name ".mote/themes/modus-vivendi.toml" root))))
+      (delete-directory root t))))
 
 (provide 'mote-test)
 ;;; mote-test.el ends here
