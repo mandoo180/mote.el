@@ -1101,8 +1101,10 @@ so every attribute a test touches is put back, last change first."
     (default :weight normal)
     (default :slant normal))
   "Default face settings the theme export tests start from.
-A face takes what it leaves unspecified from the default face, so the
-expected tables depend on it, and batch Emacs leaves its colours unset.")
+The export takes the default's own value only where it does so on
+purpose: an attribute set to `reset', and the colour an inverse-video
+face leaves out.  Batch Emacs leaves the default's colours unset, which
+is why the fixture sets them.")
 
 (ert-deftest mote-test-export-faces-follow-the-app ()
   "The exported faces are the app's list without its `mote-' faces.
