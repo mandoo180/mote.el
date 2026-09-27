@@ -84,9 +84,11 @@ contributes only its own background, the caret colour.  Colours become
 and underline and strike-through to on or off, without colour or
 style.  The app has no inverse video, so an inverse-video face is
 written with its foreground and background swapped, the colours Emacs
-draws it in.  Faces of packages this Emacs has not loaded yet (open an
-Org or Markdown file first) are left out, and the app fills them from
-its own defaults.  An older Mote app warns about each ~"unspecified"~
+draws it in.  Faces of packages this Emacs has not loaded yet (open a
+Markdown file first) are left out, and the app fills them from its own
+defaults; Org's own faces are not among them, because exporting always
+loads Org for the probes below, whether or not you opened an Org file
+this session.  An older Mote app warns about each ~"unspecified"~
 line and fills it from its own theme instead.
 
 Org keywords, tags, checkboxes, the done headline, the document title

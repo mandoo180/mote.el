@@ -1841,5 +1841,28 @@ The faces only the app has are left out."
          (should (string-match-p "^\\[faces\\.mote-strike-through\\]$" text))
          (should (string-match-p "^\\[faces\\.mote-checkbox-done\\]$" text)))))))
 
+(ert-deftest mote-test-theme-toml-named-face-defined-by-the-probe-load ()
+  "A named face Org only defines while loading still exports.
+`mote--probe-tables' is what makes Org load, through `require' and
+`org-mode-hook'.  Stands for a fresh session where Org was deferred: the
+probe's hook here defines a face `mote-export-faces' lists, the way Org
+itself defines `org-level-1' and `outline-1' as it loads.  If the named
+faces were read before the probes forced that load, this face would not
+exist yet and the export would silently drop it."
+  (should-not (facep 'mote-test-theme-toml-late-face))
+  (let ((org-mode-hook
+         (list (lambda ()
+                 (make-face 'mote-test-theme-toml-late-face)
+                 (set-face-attribute 'mote-test-theme-toml-late-face
+                                     (selected-frame)
+                                     :foreground "#00BB00"))))
+        (mote-export-faces '(default mote-test-theme-toml-late-face))
+        (mote-export-probes '((org-todo 1 2 nil))))
+    (mote-test--with-faces
+     mote-test--export-default
+     (lambda ()
+       (should (string-match-p "^\\[faces\\.mote-test-theme-toml-late-face\\]$"
+                               (mote--theme-toml "x" "X" 'dark)))))))
+
 (provide 'mote-test)
 ;;; mote-test.el ends here

@@ -1187,11 +1187,16 @@ the phone, and KIND the frame's `background-mode': `light' gives a light
 theme, anything else a dark one.  Faces in `mote-export-faces' that are
 not defined here are left out; the app fills them in.  The faces of
 `mote-export-probes' follow, read from how Org draws them."
-  (let ((tables (append
-                 (delq nil (mapcar (lambda (face)
-                                     (and (facep face) (mote--face-toml face)))
-                                   mote-export-faces))
-                 (and mote-export-probes (mote--probe-tables)))))
+  (let* ((probes (and mote-export-probes (mote--probe-tables)))
+         ;; The probes come first here so that Org, which they `require',
+         ;; is loaded before the named faces below are read: a deferred
+         ;; Org only defines faces such as `org-level-1' once it loads,
+         ;; and `facep' would say no to them if asked first.  The output
+         ;; order (named faces, then probes) is unchanged.
+         (named (delq nil (mapcar (lambda (face)
+                                    (and (facep face) (mote--face-toml face)))
+                                  mote-export-faces)))
+         (tables (append named probes)))
     (concat
      "# Exported from Emacs by mote-export-theme.  On the phone: load-theme "
      id "\n"
