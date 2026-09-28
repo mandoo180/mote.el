@@ -1112,8 +1112,8 @@ is why the fixture sets them.")
   "The faces read by name are the app's list without probes and `mote-' faces.
 The list is shared with the Mote app, so a face added or dropped here
 by accident silently changes what reaches the phone."
-  (should (= (length mote-export-faces) 52))
-  (should (equal (length (delete-dups (copy-sequence mote-export-faces))) 52))
+  (should (= (length mote-export-faces) 54))
+  (should (equal (length (delete-dups (copy-sequence mote-export-faces))) 54))
   (should-not (seq-find (lambda (face)
                           (string-prefix-p "mote-" (symbol-name face)))
                         mote-export-faces))
@@ -1121,7 +1121,11 @@ by accident silently changes what reaches the phone."
   (dolist (probe mote-export-probes)
     (should-not (memq (car probe) mote-export-faces)))
   (should (eq (car mote-export-faces) 'default))
-  (should (eq (car (last mote-export-faces)) 'lazy-highlight)))
+  (should (eq (car (last mote-export-faces)) 'lazy-highlight))
+  ;; The app lists the two line-number faces right after `shadow' in its
+  ;; basic group (Mote plan 21), so the export does too.
+  (should (equal (seq-take (memq 'shadow mote-export-faces) 3)
+                 '(shadow line-number line-number-current-line))))
 
 (ert-deftest mote-test-theme-id-default ()
   "The offered id is the enabled theme's name in the app's alphabet."

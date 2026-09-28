@@ -40,7 +40,8 @@
 `docs/superpowers/specs/2026-09-27-mote-p19-theme-faces-design.md` §7). 0.3.0이 탐침 상수
 `mote-export-probe-text`·`mote-export-probes`를 더했다 — org 구문의 모양을 face 이름 대신 실제로
 칠한 결과에서 읽는다(앱 저장소의 `docs/superpowers/specs/2026-09-27-mote-p20-face-fidelity-design.md`
-§5).
+§5). 0.3.1이 `mote-export-faces`에 줄 번호 face 둘(`line-number`·`line-number-current-line`)을 더했다(앱
+저장소의 `docs/superpowers/specs/2026-09-27-mote-p21-layout-design.md` §9).
 
 | 변수 | 타입 | 기본값 | 역할 |
 |---|---|---|---|

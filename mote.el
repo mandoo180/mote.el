@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026
 
 ;; Author: Kyeongsoo Choi <mandoo180@gmail.com>
-;; Version: 0.3.0
+;; Version: 0.3.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: convenience, files, vc
 ;; URL: https://github.com/mandoo180/mote.el
@@ -881,7 +881,8 @@ by the next call."
 ;; is ignored there with a warning, so a stale copy loses colours rather
 ;; than breaking the phone.
 (defconst mote-export-faces
-  '(default cursor region highlight shadow bold italic underline link
+  '(default cursor region highlight shadow line-number line-number-current-line
+    bold italic underline link
     font-lock-comment-face font-lock-string-face
     font-lock-keyword-face font-lock-number-face
     outline-1 outline-2 outline-3 outline-4
