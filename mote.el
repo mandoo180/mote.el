@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026
 
 ;; Author: Kyeongsoo Choi <mandoo180@gmail.com>
-;; Version: 0.3.1
+;; Version: 0.3.2
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: convenience, files, vc
 ;; URL: https://github.com/mandoo180/mote.el
@@ -882,7 +882,7 @@ by the next call."
 ;; than breaking the phone.
 (defconst mote-export-faces
   '(default cursor region highlight shadow line-number line-number-current-line
-    bold italic underline link
+    bold italic underline link warning error success
     font-lock-comment-face font-lock-string-face
     font-lock-keyword-face font-lock-number-face
     outline-1 outline-2 outline-3 outline-4
@@ -896,7 +896,8 @@ by the next call."
     markdown-bold-face markdown-italic-face markdown-code-face
     markdown-inline-code-face markdown-markup-face markdown-link-face
     markdown-gfm-checkbox-face
-    mode-line minibuffer-prompt lazy-highlight)
+    mode-line mode-line-buffer-id mode-line-emphasis mode-line-highlight
+    minibuffer-prompt lazy-highlight)
   "Faces `mote-export-theme' reads by name, in the order the app lists them.")
 
 (defun mote--theme-id-default (theme)
