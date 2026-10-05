@@ -1011,13 +1011,16 @@ through `mote--box-toml'."
 (defun mote--box-toml (box)
   "Return BOX, a `:box' value other than `unspecified', as a TOML value.
 nil is no box, written false; t is a one-pixel box in the foreground
-colour, written true; a colour is a one-pixel box in that colour.  A
+colour, written true; an integer is a box of that width in the
+foreground colour, written as a table of its line width; a colour is a
+one-pixel box in that colour.  A
 property list becomes a table of its line width and colour, without its
 style, as the app draws every box flat.  A colour that names no colour
 is left out, and a box left with nothing to say is written true."
   (cond
    ((null box) "false")
    ((eq box t) "true")
+   ((integerp box) (format "{ line-width = %d }" box))
    ((stringp box)
     (let ((hex (mote--color-hex box)))
       (if hex (mote--toml-string hex) "true")))

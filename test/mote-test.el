@@ -1963,6 +1963,8 @@ tenths of a point, means nothing there."
                                                :style released-button))
                  "{ line-width = [-1, -2], color = \"#282C34\" }"))
   (should (equal (mote--box-toml '(:line-width 2)) "{ line-width = 2 }"))
+  (should (equal (mote--box-toml 3) "{ line-width = 3 }"))
+  (should (equal (mote--box-toml -1) "{ line-width = -1 }"))
   (should (equal (mote--box-toml '(:style pressed-button)) "true")))
 
 (ert-deftest mote-test-export-inverse-video-is-written-off ()
