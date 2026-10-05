@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026
 
 ;; Author: Kyeongsoo Choi <mandoo180@gmail.com>
-;; Version: 0.3.2
+;; Version: 0.4.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: convenience, files, vc
 ;; URL: https://github.com/mandoo180/mote.el
@@ -872,7 +872,8 @@ by the next call."
 ;; The source of this list is section 2.3 of the Mote app's design
 ;; document for themes and faces,
 ;; docs/superpowers/specs/2026-09-27-mote-p19-theme-faces-design.md in the
-;; app repository, as plan 20 widened it
+;; app repository, as plan 20 widened it and plan 25 added the org-modern
+;; label faces, whose look the app draws from its own `[org]' settings
 ;; (docs/superpowers/specs/2026-09-27-mote-p20-face-fidelity-design.md,
 ;; sections 4.1 and 5.3).  It is a contract between the two repositories:
 ;; the order follows the app's face groups, the faces `mote-export-probes'
@@ -881,7 +882,8 @@ by the next call."
 ;; is ignored there with a warning, so a stale copy loses colours rather
 ;; than breaking the phone.
 (defconst mote-export-faces
-  '(default cursor region highlight shadow line-number line-number-current-line
+  '(default cursor region secondary-selection highlight shadow
+    line-number line-number-current-line
     bold italic underline link warning error success
     font-lock-comment-face font-lock-string-face
     font-lock-keyword-face font-lock-number-face
@@ -891,6 +893,13 @@ by the next call."
     org-level-5 org-level-6 org-level-7 org-level-8
     org-link org-code org-verbatim org-block
     org-meta-line org-block-begin-line org-block-end-line
+    org-modern-symbol org-modern-label org-modern-done
+    org-modern-block-name org-modern-internal-target org-modern-radio-target
+    org-hide org-priority org-footnote org-target
+    org-modern-todo org-modern-priority org-modern-tag
+    org-modern-date-active org-modern-date-inactive
+    org-modern-time-active org-modern-time-inactive
+    org-modern-progress-complete org-modern-progress-incomplete
     markdown-header-face-1 markdown-header-face-2 markdown-header-face-3
     markdown-header-face-4 markdown-header-face-5 markdown-header-face-6
     markdown-bold-face markdown-italic-face markdown-code-face
@@ -959,7 +968,10 @@ covers every alias."
     (:weight . "weight")
     (:slant . "slant")
     (:underline . "underline")
-    (:strike-through . "strike-through"))
+    (:strike-through . "strike-through")
+    (:height . "height")
+    (:inverse-video . "inverse-video")
+    (:box . "box"))
   "Face attributes `mote-export-theme' writes, with their keys in the file.")
 
 (defconst mote--toml-unspecified "\"unspecified\""
@@ -978,11 +990,15 @@ the same text, to the faces beneath it.")
 `unspecified' is written as \"unspecified\".  Underline and
 strike-through become on or off, without colour or style.  A colour
 that names no colour, such as a terminal's \"unspecified-fg\", is left
-out."
+out.  A relative height, a float, is written as it is, and an absolute
+one, an integer, is left out: the app scales text only.  A box goes
+through `mote--box-toml'."
   (cond
    ((eq value 'unspecified) mote--toml-unspecified)
    ((memq attribute '(:underline :strike-through)) (if value "true" "false"))
+   ((eq attribute :box) (mote--box-toml value))
    ((null value) nil)
+   ((eq attribute :height) (and (floatp value) (number-to-string value)))
    ((memq attribute '(:foreground :background))
     (let ((hex (mote--color-hex value)))
       (and hex (mote--toml-string hex))))
@@ -991,6 +1007,33 @@ out."
    ;; Every slant but upright is drawn slanted, the reverse ones
    ;; included, as the app reads them (section 2.1 of its design).
    (t (if (memq value '(normal r)) "\"normal\"" "\"italic\""))))
+
+(defun mote--box-toml (box)
+  "Return BOX, a `:box' value other than `unspecified', as a TOML value.
+nil is no box, written false; t is a one-pixel box in the foreground
+colour, written true; a colour is a one-pixel box in that colour.  A
+property list becomes a table of its line width and colour, without its
+style, as the app draws every box flat.  A colour that names no colour
+is left out, and a box left with nothing to say is written true."
+  (cond
+   ((null box) "false")
+   ((eq box t) "true")
+   ((stringp box)
+    (let ((hex (mote--color-hex box)))
+      (if hex (mote--toml-string hex) "true")))
+   (t
+    (let* ((width (plist-get box :line-width))
+           (hex (mote--color-hex (plist-get box :color)))
+           (parts (delq nil
+                        (list (cond ((integerp width)
+                                     (format "line-width = %d" width))
+                                    ((consp width)
+                                     (format "line-width = [%d, %d]"
+                                             (car width) (cdr width))))
+                              (and hex
+                                   (concat "color = "
+                                           (mote--toml-string hex)))))))
+      (if parts (concat "{ " (string-join parts ", ") " }") "true")))))
 
 (defun mote--export-value (get attribute inverse fill)
   "Return what `mote-export-theme' writes for ATTRIBUTE, a TOML value or nil.
@@ -1002,16 +1045,20 @@ Emacs draws with.  `reset' (Emacs 29) always means the default face's
 value.  INVERSE non-nil means the face is drawn in inverse video, and
 its colours are written as Emacs draws them: :foreground gives the
 face's background and :background its foreground, the default face's
-where the face leaves one out."
-  (let* ((swap (and inverse (memq attribute '(:foreground :background))))
-         (source (cond ((not swap) attribute)
-                       ((eq attribute :foreground) :background)
-                       (t :foreground)))
-         (value (funcall get source)))
-    (when (or (eq value 'reset)
-              (and (eq value 'unspecified) (or swap fill)))
-      (setq value (face-attribute 'default source nil t)))
-    (mote--attribute-toml attribute value)))
+where the face leaves one out.
+Inverse video itself is always written off, because the colours are
+already written swapped and the app must not swap them again."
+  (if (eq attribute :inverse-video)
+      "false"
+    (let* ((swap (and inverse (memq attribute '(:foreground :background))))
+           (source (cond ((not swap) attribute)
+                         ((eq attribute :foreground) :background)
+                         (t :foreground)))
+           (value (funcall get source)))
+      (when (or (eq value 'reset)
+                (and (eq value 'unspecified) (or swap fill)))
+        (setq value (face-attribute 'default source nil t)))
+      (mote--attribute-toml attribute value))))
 
 (defun mote--face-value (face attribute &optional inverse)
   "Return FACE's ATTRIBUTE as a TOML value, or nil to leave it out.

@@ -82,14 +82,18 @@ through, and alone the default face's value shows.  The cursor
 contributes only its own background, the caret colour.  Colours become
 ~#RRGGBB~, weights fold to bold or normal, slants to italic or normal,
 and underline and strike-through to on or off, without colour or
-style.  The app has no inverse video, so an inverse-video face is
-written with its foreground and background swapped, the colours Emacs
-draws it in.  Faces of packages this Emacs has not loaded yet (open a
+style.  A relative height, such as the 0.8 org-modern gives its
+labels, is written as it is; an absolute one is left out, because the
+app only scales text.  A box is written with its line width and
+colour, without its style.  An inverse-video face is written with its
+foreground and background swapped, the colours Emacs draws it in, and
+with inverse video off, so that the app does not swap them again.  Faces of packages this Emacs has not loaded yet (open a
 Markdown file first) are left out, and the app fills them from its own
 defaults; Org's own faces are not among them, because exporting always
 loads Org for the probes below, whether or not you opened an Org file
 this session.  An older Mote app warns about each ~"unspecified"~
-line and fills it from its own theme instead.
+line and fills it from its own theme instead.  An app older than Mote
+plan 25 also warns about each ~height~, ~inverse-video~ and ~box~ line.
 
 Org keywords, tags, checkboxes, the done headline, the document title
 and strike-through are read differently: ~mote-export-theme~ fontifies
@@ -99,8 +103,9 @@ as ~org-todo-keyword-faces~ come along.  Where Emacs drew one over the
 heading instead of merging with it, what it leaves unspecified is
 written as the default face's value, so the heading does not show
 through on the phone either.  If Org fails, those faces are read by
-name and a message says so.  Only faces travel: bullets, hidden markers
-and rounded labels stay on the desktop.
+name and a message says so.  Only faces travel: the app draws bullets,
+hidden markers and labels itself, from the ~[org]~ table of its
+~.mote.toml~, and takes their colours from the faces written here.
 
 Export from a graphical frame.  A terminal frame still writes the
 file, but themes pick terminal colours there, which may only
