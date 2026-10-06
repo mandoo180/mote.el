@@ -989,13 +989,12 @@ the same text, to the faces beneath it.")
 
 (defun mote--attribute-toml (attribute value)
   "Return VALUE of ATTRIBUTE as a TOML value, or nil to leave it out.
-`unspecified' is written as \"unspecified\".  Underline and
-overline go through `mote--line-toml'; strike-through becomes on or off,
-without colour or style.  A colour
-that names no colour, such as a terminal's \"unspecified-fg\", is left
-out.  A relative height, a float, is written as it is, and an absolute
-one, an integer, is left out: the app scales text only.  A box goes
-through `mote--box-toml'."
+`unspecified' is written as \"unspecified\".  Underline and overline
+go through `mote--line-toml'; strike-through becomes on or off,
+without colour or style.  A colour that names no colour, such as a
+terminal's \"unspecified-fg\", is left out.  A relative height, a
+float, is written as it is, and an absolute one, an integer, is left
+out: the app scales text only.  A box goes through `mote--box-toml'."
   (cond
    ((eq value 'unspecified) mote--toml-unspecified)
    ((memq attribute '(:underline :overline)) (mote--line-toml value))

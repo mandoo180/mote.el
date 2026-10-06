@@ -82,10 +82,11 @@ through, and alone the default face's value shows.  The cursor
 contributes only its own background, the caret colour.  Colours become
 ~#RRGGBB~, weights fold to bold or normal, slants to italic or normal,
 underline and overline to their colour, or to on or off when they
-have none, and strike-through to on or off, all without style.  A relative height, such as the 0.8 org-modern gives
-its labels, is written as it is; an absolute one is left out, because the
-app only scales text.  A box is written with its line width and
-colour, without its style.  An inverse-video face is written with its
+have none, and strike-through to on or off, all without style.  A
+relative height, such as the 0.8 org-modern gives its labels, is
+written as it is; an absolute one is left out, because the app only
+scales text.  A box is written with its line width and colour, without
+its style.  An inverse-video face is written with its
 foreground and background swapped, the colours Emacs draws it in, and
 with inverse video off, so that the app does not swap them again.
 When org-modern is on, its label faces carry an explicit pixel box, and
@@ -99,9 +100,8 @@ exporting always loads Org for the probes below, whether or not you
 opened an Org file this session.  An older Mote app warns about each
 ~"unspecified"~ line and fills it from its own theme instead.  An app
 older than Mote plan 25 also warns about each ~height~,
-~inverse-video~ and ~box~ line.  One older than
-Mote plan 26 warns about each ~overline~ line and each coloured
-underline.
+~inverse-video~ and ~box~ line.  One older than Mote plan 26 warns
+about each ~overline~ line and each coloured underline.
 
 Org keywords, tags, checkboxes, the done headline, the document title
 and strike-through are read differently: ~mote-export-theme~ fontifies
