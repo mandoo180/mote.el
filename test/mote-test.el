@@ -1112,8 +1112,8 @@ is why the fixture sets them.")
   "The faces read by name are the app's list without probes and `mote-' faces.
 The list is shared with the Mote app, so a face added or dropped here
 by accident silently changes what reaches the phone."
-  (should (= (length mote-export-faces) 80))
-  (should (equal (length (delete-dups (copy-sequence mote-export-faces))) 80))
+  (should (= (length mote-export-faces) 82))
+  (should (equal (length (delete-dups (copy-sequence mote-export-faces))) 82))
   (should-not (seq-find (lambda (face)
                           (string-prefix-p "mote-" (symbol-name face)))
                         mote-export-faces))
@@ -1135,10 +1135,11 @@ by accident silently changes what reaches the phone."
                  '(mode-line mode-line-buffer-id mode-line-emphasis
                              mode-line-highlight minibuffer-prompt)))
   ;; Mote plan 25 put secondary-selection right after region in the app's
-  ;; basic group and the org-modern label faces at the end of its org group.
+  ;; basic group and the org-modern label faces at the end of its org group;
+  ;; Mote plan 26 put org-table and org-modern-horizontal-rule after them.
   (should (equal (seq-take (memq 'region mote-export-faces) 3)
                  '(region secondary-selection highlight)))
-  (should (equal (seq-take (memq 'org-block-end-line mote-export-faces) 21)
+  (should (equal (seq-take (memq 'org-block-end-line mote-export-faces) 23)
                  '(org-block-end-line
                    org-modern-symbol org-modern-label org-modern-done
                    org-modern-block-name org-modern-internal-target
@@ -1147,6 +1148,7 @@ by accident silently changes what reaches the phone."
                    org-modern-date-active org-modern-date-inactive
                    org-modern-time-active org-modern-time-inactive
                    org-modern-progress-complete org-modern-progress-incomplete
+                   org-table org-modern-horizontal-rule
                    markdown-header-face-1))))
 
 (ert-deftest mote-test-theme-id-default ()
@@ -1218,6 +1220,7 @@ so the exported file carries resolved values and an empty inherit list."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n")))
      ;; With a list, the first face that has a value wins, as in Emacs.
      (set-face-attribute 'mote-test-export-child (selected-frame)
@@ -1234,6 +1237,7 @@ so the exported file carries resolved values and an empty inherit list."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-theme-export-writes-unspecified ()
@@ -1260,6 +1264,7 @@ foreground over a heading."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-theme-export-has-no-background-list ()
@@ -1291,6 +1296,7 @@ the list of faces with a filled background did before."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-theme-export-folds-weight ()
@@ -1328,7 +1334,8 @@ The app draws the reverse slants slanted too, so they are italic here."
 
 (ert-deftest mote-test-theme-export-lines-are-flags ()
   "Underline and strike-through are written as on, off or unspecified.
-Their colours and styles have no counterpart in the app.  Off is
+An underline carries its colour when it has one; styles have no
+counterpart in the app, nor has a strike-through colour.  Off is
 written as such: the app underlines `link' by default, so a theme that
 turns the line off in Emacs must turn it off on the phone as well."
   (mote-test--with-faces
@@ -1345,11 +1352,12 @@ turns the line off in Emacs must turn it off on the phone as well."
                             "background = \"unspecified\"\n"
                             "weight = \"unspecified\"\n"
                             "slant = \"unspecified\"\n"
-                            "underline = true\n"
+                            "underline = \"#FF0000\"\n"
                             "strike-through = true\n"
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n")))
      (should (equal (mote--face-value 'mote-test-export-other :underline)
                     "true"))
@@ -1383,6 +1391,7 @@ turns the line off in Emacs must turn it off on the phone as well."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-theme-export-inverse-video-swaps-colours ()
@@ -1409,6 +1418,7 @@ as when Emacs draws it, and inverse video is inherited like the rest."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n")))
      (should (equal (mote--face-toml 'mote-test-export-child)
                     (concat "[faces.mote-test-export-child]\n"
@@ -1421,6 +1431,7 @@ as when Emacs draws it, and inverse video is inherited like the rest."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n")))
      (should (equal (mote--face-toml 'mote-test-export-other)
                     (concat "[faces.mote-test-export-other]\n"
@@ -1433,6 +1444,7 @@ as when Emacs draws it, and inverse video is inherited like the rest."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-theme-export-inverse-video-reset-is-off ()
@@ -1458,6 +1470,7 @@ as when Emacs draws it, and inverse video is inherited like the rest."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-theme-export-cursor-is-background-only ()
@@ -1519,6 +1532,7 @@ with nothing set states every attribute as unspecified."
                        "strike-through = false\n"
                        "inverse-video = false\n"
                        "box = false\n"
+                       "overline = false\n"
                        "\n"
                        "[faces.cursor]\n"
                        "background = \"#FF0000\"\n"
@@ -1533,6 +1547,7 @@ with nothing set states every attribute as unspecified."
                        "height = \"unspecified\"\n"
                        "inverse-video = false\n"
                        "box = \"unspecified\"\n"
+                       "overline = \"unspecified\"\n"
                        "inherit = []\n"
                        "\n"
                        "[faces.mote-test-export-parent]\n"
@@ -1545,6 +1560,7 @@ with nothing set states every attribute as unspecified."
                        "height = \"unspecified\"\n"
                        "inverse-video = false\n"
                        "box = \"unspecified\"\n"
+                       "overline = \"unspecified\"\n"
                        "inherit = []\n"
                        "\n"
                        "[faces.mote-test-export-child]\n"
@@ -1557,6 +1573,7 @@ with nothing set states every attribute as unspecified."
                        "height = \"unspecified\"\n"
                        "inverse-video = false\n"
                        "box = \"unspecified\"\n"
+                       "overline = \"unspecified\"\n"
                        "inherit = []\n")))))))
 
 (ert-deftest mote-test-theme-export-default-writes-values-only ()
@@ -1789,6 +1806,7 @@ do not set is written as \"unspecified\" and the heading shows through."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-probe-table-drawn-over ()
@@ -1811,6 +1829,7 @@ the default face's, and the heading does not show through."
                             "strike-through = false\n"
                             "inverse-video = false\n"
                             "box = false\n"
+                            "overline = false\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-probe-table-without-base ()
@@ -1831,6 +1850,7 @@ The app draws such a face alone, where unspecified means the default's."
                             "height = \"unspecified\"\n"
                             "inverse-video = false\n"
                             "box = \"unspecified\"\n"
+                            "overline = \"unspecified\"\n"
                             "inherit = []\n"))))))
 
 (ert-deftest mote-test-probe-faces-in-plain-org ()
@@ -1884,6 +1904,7 @@ Every attribute is then left to the heading, as Emacs leaves it."
                                 "height = \"unspecified\"\n"
                                 "inverse-video = false\n"
                                 "box = \"unspecified\"\n"
+                                "overline = \"unspecified\"\n"
                                 "inherit = []\n"))))))))
 
 (ert-deftest mote-test-probe-failure-falls-back-to-names ()
@@ -1991,6 +2012,26 @@ An app that read it on would swap them a second time."
               (regexp-quote
                "box = { line-width = [-1, -2], color = \"#282C34\" }")
               (mote--face-toml 'mote-test-export-child))))))
+
+(ert-deftest mote-test-line-toml ()
+  "An underline or overline is written as its colour when it has one.
+The app reads a colour as the line on in that colour, and true as on in
+the foreground colour; the style and position are left out."
+  (should (equal (mote--line-toml nil) "false"))
+  (should (equal (mote--line-toml t) "true"))
+  (should (equal (mote--line-toml "gray30") "\"#4D4D4D\""))
+  (should (equal (mote--line-toml '(:color "#FF0000" :style wave)) "\"#FF0000\""))
+  (should (equal (mote--line-toml '(:style wave)) "true"))
+  (should (equal (mote--line-toml '(:color foreground-color)) "true"))
+  (should (equal (mote--line-toml "no-such-colour-xyz") "true")))
+
+(ert-deftest mote-test-attribute-toml-lines ()
+  "Underline and overline go through `mote--line-toml'; strike-through stays on or off."
+  (should (equal (mote--attribute-toml :underline "gray30") "\"#4D4D4D\""))
+  (should (equal (mote--attribute-toml :overline t) "true"))
+  (should (equal (mote--attribute-toml :overline nil) "false"))
+  (should (equal (mote--attribute-toml :overline 'unspecified) "\"unspecified\""))
+  (should (equal (mote--attribute-toml :strike-through "red") "true")))
 
 (provide 'mote-test)
 ;;; mote-test.el ends here

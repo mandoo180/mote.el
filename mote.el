@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026
 
 ;; Author: Kyeongsoo Choi <mandoo180@gmail.com>
-;; Version: 0.4.0
+;; Version: 0.5.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: convenience, files, vc
 ;; URL: https://github.com/mandoo180/mote.el
@@ -900,6 +900,7 @@ by the next call."
     org-modern-date-active org-modern-date-inactive
     org-modern-time-active org-modern-time-inactive
     org-modern-progress-complete org-modern-progress-incomplete
+    org-table org-modern-horizontal-rule
     markdown-header-face-1 markdown-header-face-2 markdown-header-face-3
     markdown-header-face-4 markdown-header-face-5 markdown-header-face-6
     markdown-bold-face markdown-italic-face markdown-code-face
@@ -971,7 +972,8 @@ covers every alias."
     (:strike-through . "strike-through")
     (:height . "height")
     (:inverse-video . "inverse-video")
-    (:box . "box"))
+    (:box . "box")
+    (:overline . "overline"))
   "Face attributes `mote-export-theme' writes, with their keys in the file.")
 
 (defconst mote--toml-unspecified "\"unspecified\""
@@ -988,14 +990,16 @@ the same text, to the faces beneath it.")
 (defun mote--attribute-toml (attribute value)
   "Return VALUE of ATTRIBUTE as a TOML value, or nil to leave it out.
 `unspecified' is written as \"unspecified\".  Underline and
-strike-through become on or off, without colour or style.  A colour
+overline go through `mote--line-toml'; strike-through becomes on or off,
+without colour or style.  A colour
 that names no colour, such as a terminal's \"unspecified-fg\", is left
 out.  A relative height, a float, is written as it is, and an absolute
 one, an integer, is left out: the app scales text only.  A box goes
 through `mote--box-toml'."
   (cond
    ((eq value 'unspecified) mote--toml-unspecified)
-   ((memq attribute '(:underline :strike-through)) (if value "true" "false"))
+   ((memq attribute '(:underline :overline)) (mote--line-toml value))
+   ((eq attribute :strike-through) (if value "true" "false"))
    ((eq attribute :box) (mote--box-toml value))
    ((null value) nil)
    ((eq attribute :height) (and (floatp value) (number-to-string value)))
@@ -1037,6 +1041,24 @@ is left out, and a box left with nothing to say is written true."
                                    (concat "color = "
                                            (mote--toml-string hex)))))))
       (if parts (concat "{ " (string-join parts ", ") " }") "true")))))
+
+(defun mote--line-toml (value)
+  "Return VALUE, an `:underline' or `:overline' value, as a TOML value.
+VALUE is not `unspecified'.  nil is off, written false.  A colour, or a
+property list whose `:color' names one, is a line in that colour,
+written as the colour.  Anything else that turns the line on, t or a
+property list without a colour, is written true: the app draws it in
+the foreground colour.  `:style' and `:position' are left out, as the
+app draws every line plain."
+  (cond
+   ((null value) "false")
+   ((stringp value)
+    (let ((hex (mote--color-hex value)))
+      (if hex (mote--toml-string hex) "true")))
+   ((and (consp value) (stringp (plist-get value :color)))
+    (let ((hex (mote--color-hex (plist-get value :color))))
+      (if hex (mote--toml-string hex) "true")))
+   (t "true")))
 
 (defun mote--export-value (get attribute inverse fill)
   "Return what `mote-export-theme' writes for ATTRIBUTE, a TOML value or nil.
